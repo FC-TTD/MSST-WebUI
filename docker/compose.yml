@@ -1,0 +1,29 @@
+services:
+  msst-ui:
+    image: msst-ui:latest
+    build: . 
+    restart: always
+    ports:
+      - 8662:7860
+    volumes:
+      - ./root:/root
+      #- ./pretrain/All_Models:/app/pretrain
+      - /TTD-Data/msst/pretrain/All_Models:/app/pretrain
+      - /TTD/04_应用/msst/INPUT:/app/input
+      - /TTD/04_应用/msst/INPUT_BATCH:/app/input_batch
+      - /TTD/04_应用/msst/OUTPUT:/app/results
+    container_name: msst
+    environment:
+      - LANG=zh_CN.UTF-8
+      - LANGUAGE=zh_CN.UTF-8
+      - LC_ALL=zh_CN.UTF-8
+      - TZ=Asia/Shanghai
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ "1" ]
+              capabilities: [gpu]
+    tty: true
+    stdin_open: true

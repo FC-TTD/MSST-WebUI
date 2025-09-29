@@ -1,0 +1,64 @@
+---
+- name: 部署MSST-WebUI Gradio应用到ttd-stage环境
+  hosts: ttd-edge
+  become: true
+  vars:
+    project_dir: /opt/msst-webui
+  tags: ["stage"]
+
+  tasks:
+    - name: 创建项目目录
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: 使用rsync同步项目文件
+      synchronize:
+        src: "{{ playbook_dir }}/../"
+        dest: "{{ project_dir }}"
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=.conda"
+          - "--exclude=pretrain"
+          - "--exclude=.github"
+          - "--exclude=node_modules"
+          - "--exclude=__pycache__"
+          - "--exclude=*.pyc"
+          - "--exclude=ansible"
+          - "--exclude=docs"
+          - "--exclude=runtime"
+        delete: yes
+
+    - name: 复制Docker Compose配置
+      copy:
+        src: "{{ project_dir }}/docker/compose.yml"
+        dest: "{{ project_dir }}/compose.yaml"
+        remote_src: yes
+    
+    - name: 复制Docker Buildfile
+      copy:
+        src: "{{ project_dir }}/docker/Dockerfile"
+        dest: "{{ project_dir }}/Dockerfile"
+        remote_src: yes
+    
+    - name: 复制entry.py
+      copy:
+        src: "{{ project_dir }}/docker/entry.py"
+        dest: "{{ project_dir }}/entry.py"
+        remote_src: yes
+
+    - name: 构建并启动Gradio应用容器
+      command: docker compose up -d --build
+      args:
+        chdir: "{{ project_dir }}"
+
+    - name: 检查容器状态
+      command: docker compose ps
+      args:
+        chdir: "{{ project_dir }}"
+      register: container_status
+
+    - name: 显示容器状态
+      debug:
+        var: container_status.stdout_lines
