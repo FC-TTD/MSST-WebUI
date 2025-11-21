@@ -10,6 +10,7 @@ from torch import backends, cuda
 from ttd_fastapi_utils import setup_cuda_health
 import uvicorn
 
+from api.app import register_routes
 from utils.constant import PACKAGE_VERSION, THEME_FOLDER
 from webui.utils import i18n, logger
 multiprocessing.set_start_method("spawn", force=True)
@@ -55,6 +56,9 @@ def create_app():
 
     # 添加 CUDA 健康检查
     setup_cuda_health(fastapi_app, ready_predicate=lambda: cuda.is_available())
+
+    # 注册 API 路由（必须在 Gradio 挂载之前）
+    register_routes(fastapi_app)
 
     # 将 Gradio 挂载到根路径
     gr.mount_gradio_app(fastapi_app, demo, path="/")

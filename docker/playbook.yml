@@ -52,13 +52,16 @@
       command: docker compose up -d --build
       args:
         chdir: "{{ project_dir }}"
+      tags: ["docker"]
 
     - name: 检查容器状态
       command: docker compose ps
       args:
         chdir: "{{ project_dir }}"
       register: container_status
+      tags: ["docker"]
 
     - name: 显示容器状态
       debug:
         var: container_status.stdout_lines
+      tags: ["docker"]
