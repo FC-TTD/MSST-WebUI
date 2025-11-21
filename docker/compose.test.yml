@@ -1,0 +1,13 @@
+services:
+  msst-test:
+    image: msst-ui:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      - LANG=zh_CN.UTF-8
+      - LANGUAGE=zh_CN.UTF-8
+      - LC_ALL=zh_CN.UTF-8
+      - TZ=Asia/Shanghai
+    tty: true
+    stdin_open: true

@@ -4,7 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git git-lfs ffmpeg build-essential ca-certificates curl \
+    git git-lfs ffmpeg build-essential ca-certificates curl libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121

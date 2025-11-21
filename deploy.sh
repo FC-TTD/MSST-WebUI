@@ -5,6 +5,7 @@
 # 部署类型: stage (Gradio应用) 或 api (API服务器)
 
 DEPLOY_TYPE=${1}
+MODE=${2:-deploy}
 
 # 颜色定义
 GREEN='\033[0;32m'
@@ -37,9 +38,15 @@ case "$DEPLOY_TYPE" in
         ;;
 esac
 
+EXTRA_ARGS=""
+if [ "$MODE" = "sync" ]; then
+    echo -e "${YELLOW}当前运行于同步模式：仅同步文件，不执行 Docker 命令${NC}"
+    EXTRA_ARGS="--skip-tags docker"
+fi
+
 # 执行ansible playbook
-ANSIBLE_STDOUT_CALLBACK=debug echo -e "${YELLOW}执行命令: ansible-playbook ./docker/playbook.yml --tags $TAGS -i "$TARGET_HOST," -v${NC}"
-ANSIBLE_STDOUT_CALLBACK=debug ansible-playbook ./docker/playbook.yml --tags $TAGS -i "$TARGET_HOST," -v
+ANSIBLE_STDOUT_CALLBACK=debug echo -e "${YELLOW}执行命令: ansible-playbook ./docker/playbook.yml --tags $TAGS -i "$TARGET_HOST," -v $EXTRA_ARGS${NC}"
+ANSIBLE_STDOUT_CALLBACK=debug ansible-playbook ./docker/playbook.yml --tags $TAGS -i "$TARGET_HOST," -v $EXTRA_ARGS
 
 # 检查部署结果
 DEPLOY_RESULT=$?
