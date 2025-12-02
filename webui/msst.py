@@ -110,9 +110,9 @@ def run_inference_single(selected_model, input_audio, store_dir, extract_instrum
 	input_path = TEMP_PATH
 
 	save_msst_inference_config(selected_model, input_folder, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta)
-	message = start_inference(selected_model, input_path, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta, batch_mode="folder")
+	message, files = start_inference(selected_model, input_path, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta, batch_mode="folder")
 	shutil.rmtree(TEMP_PATH)
-	return message
+	return message, files
 
 
 def run_multi_inference(selected_model, input_folder, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta):
@@ -130,11 +130,11 @@ def run_folder_batch_inference(selected_model, input_folder, store_dir, extract_
 
 def start_inference(selected_model, input_folder, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta, batch_mode="folder"):
 	if selected_model == "":
-		return gr.Error(i18n("请选择模型"))
+		return gr.Error(i18n("请选择模型")), []
 	if input_folder == "":
-		return gr.Error(i18n("请选择输入目录"))
+		return gr.Error(i18n("请选择输入目录")), []
 	if store_dir == "":
-		return gr.Error(i18n("请选择输出目录"))
+		return gr.Error(i18n("请选择输出目录")), []
 
 	gpu_ids = []
 	if not force_cpu:
@@ -221,11 +221,11 @@ def start_inference(selected_model, input_folder, store_dir, extract_instrumenta
 
 	if flag[0]:
 		if flag[0] == 1:
-			return i18n("处理完成, 结果已保存至: ") + store_dir + i18n(", 耗时: ") + str(round(time.time() - start_time, 2)) + "s"
+			return i18n("处理完成, 结果已保存至: ") + store_dir + i18n(", 耗时: ") + str(round(time.time() - start_time, 2)) + "s", flag[1]
 		elif flag[0] == -1:
-			return i18n("处理失败: ") + detailed_error(flag[1])
+			return i18n("处理失败: ") + detailed_error(flag[1]), []
 	else:
-		return i18n("进程意外终止")
+		return i18n("进程意外终止"), []
 
 def run_inference(
 	model_type,

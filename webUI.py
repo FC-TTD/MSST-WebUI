@@ -82,7 +82,7 @@ def main(args):
 	# import required modules
 	import platform
 	from webui.setup import set_debug, setup_webui
-	from utils.constant import THEME_FOLDER, PACKAGE_VERSION
+	from utils.constant import THEME_FOLDER, PACKAGE_VERSION, WEBUI_CONFIG
 	from torch import cuda, backends
 
 	# check available devices and force CPU if no GPU or MPS is available
@@ -123,11 +123,19 @@ def main(args):
 	theme_path = os.path.join(THEME_FOLDER, webui_config["settings"].get("theme", "theme_blue.json"))
 	logger.debug(f"Launching WebUI with parameters: ip_address={server_name}, port={server_port}, share={share}")
 
+	# 读取配置获取输出目录，用于配置 allowed_paths
+	from utils.constant import WEBUI_CONFIG
+	from webui.utils import load_configs
+
+	config_for_paths = load_configs(WEBUI_CONFIG)
+	store_dir = config_for_paths["inference"].get("store_dir", "results/")
+
 	# launch WebUI
 	from webui import app
 
 	app.app(platform=platform_info, device=devices, force_cpu=force_cpu, theme=theme_path).queue().launch(
-		inbrowser=True, share=share, server_name=server_name, server_port=server_port, show_api=False, favicon_path="docs/logo.png"
+		inbrowser=True, share=share, server_name=server_name, server_port=server_port, show_api=False, favicon_path="docs/logo.png",
+		allowed_paths=[store_dir]  # 动态配置输出目录访问权限
 	)
 
 

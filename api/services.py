@@ -130,7 +130,7 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
         task_output_dir = os.path.join(output_dir, f"task_{task_id}")
         os.makedirs(task_output_dir, exist_ok=True)
         
-        message = run_folder_batch_inference(
+        message, _ = run_folder_batch_inference(
             req.model_name,
             input_path_for_infer,
             task_output_dir,
