@@ -2,6 +2,8 @@ __license__ = "AGPL-3.0"
 __author__ = "Sucial https://github.com/SUC-DriverOld"
 
 import gradio as gr
+import os
+import glob
 
 from webui.utils import i18n, select_folder, open_folder
 from webui.init import init_selected_model, init_selected_msst_model
@@ -83,6 +85,14 @@ def msst(webui_config, device, force_cpu_flag=False):
 	inference_audio = gr.Button(i18n("输入音频分离"), variant="primary", visible=True)
 	inference_folder = gr.Button(i18n("输入文件夹分离"), variant="primary", visible=False)
 	inference_folder_batch = gr.Button(i18n("批量文件夹分离"), variant="primary", visible=False)
+	
+	with gr.Group(visible=False) as preview_group:
+		gr.Markdown(i18n("### 结果预览"))
+		with gr.Row():
+			preview_state = gr.State([])
+			preview_select = gr.Dropdown(label=i18n("选择文件"), interactive=True, scale=3)
+		preview_player = gr.Audio(label=i18n("播放预览"), interactive=False)
+
 	with gr.Row():
 		output_message = gr.Textbox(label="Output Message", scale=5)
 		stop_msst = gr.Button(i18n("强制停止"), scale=1)
@@ -92,12 +102,69 @@ def msst(webui_config, device, force_cpu_flag=False):
 	folder_tab.select(lambda: [gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)], outputs=buttons)
 	folder_batch_tab.select(lambda: [gr.update(visible=False)] * 2 + [gr.update(visible=True)], outputs=buttons)
 
-	inference_audio.click(fn=run_inference_single, inputs=[selected_model, audio_input, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta], outputs=output_message)
-	inference_folder.click(fn=run_multi_inference, inputs=[selected_model, folder_input, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta], outputs=output_message)
+	def run_single_ui(*args):
+		msg, files = run_inference_single(*args)
+		if files:
+			names = [os.path.basename(f) for f in files]
+			# 传递绝对路径给 gr.Audio
+			return msg, files, gr.update(choices=names, value=names[0]), gr.update(value=files[0]), gr.update(visible=True)
+		return msg, [], gr.update(choices=[], value=None), None, gr.update(visible=False)
+
+	def run_multi_ui(*args):
+		msg, _ = run_multi_inference(*args)  # 忽略 success_files，因为它可能不是实际文件列表
+		# 直接扫描输出目录获取所有生成的音频文件
+		store_dir = args[2]  # store_dir 参数位置
+		if os.path.exists(store_dir):
+			all_files = []
+			for ext in ['*.wav', '*.mp3', '*.flac']:
+				all_files.extend(glob.glob(os.path.join(store_dir, '**', ext), recursive=True))
+			
+			# 调试信息
+			print(f"DEBUG: store_dir = {store_dir}")
+			print(f"DEBUG: all_files = {all_files}")
+			
+			# 过滤掉输入目录的文件，只保留输出目录的文件
+			input_dir = args[1]  # folder_input 参数位置
+			if input_dir and os.path.exists(input_dir):
+				input_files = set()
+				for ext in ['*.wav', '*.mp3', '*.flac']:
+					input_files.update(glob.glob(os.path.join(input_dir, '**', ext), recursive=True))
+				
+				print(f"DEBUG: input_dir = {input_dir}")
+				print(f"DEBUG: input_files = {list(input_files)}")
+				
+				# 只保留不在输入目录中的文件
+				output_files = [f for f in all_files if f not in input_files]
+			else:
+				output_files = all_files
+			
+			print(f"DEBUG: output_files = {output_files}")
+			
+			if output_files:
+				names = [os.path.basename(f) for f in output_files]
+				print(f"DEBUG: names = {names}")
+				# 传递完整路径给 preview_state，用于后续查找
+				# 传递绝对路径给 gr.Audio，看看是否能正确生成 URL
+				return msg, output_files, gr.update(choices=names, value=names[0]), gr.update(value=output_files[0]), gr.update(visible=True)
+		
+		return msg, [], gr.update(choices=[], value=None), None, gr.update(visible=False)
+
+	def run_batch_ui(*args):
+		# 批量处理逻辑与多文件处理相同
+		return run_multi_ui(*args)
+
+	preview_select.change(
+		fn=lambda files, name: next((f for f in files if os.path.basename(f) == name), None) if files else None,
+		inputs=[preview_state, preview_select],
+		outputs=preview_player
+	)
+
+	inference_audio.click(fn=run_single_ui, inputs=[selected_model, audio_input, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta], outputs=[output_message, preview_state, preview_select, preview_player, preview_group])
+	inference_folder.click(fn=run_multi_ui, inputs=[selected_model, folder_input, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta], outputs=[output_message, preview_state, preview_select, preview_player, preview_group])
 	inference_folder_batch.click(
-		fn=run_folder_batch_inference,
+		fn=run_batch_ui,
 		inputs=[selected_model, folder_batch_input, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta],
-		outputs=output_message,
+		outputs=[output_message, preview_state, preview_select, preview_player, preview_group],
 	)
 
 	selected_model.change(fn=update_inference_settings, inputs=selected_model, outputs=[batch_size, num_overlap, chunk_size, normalize, extract_instrumental])

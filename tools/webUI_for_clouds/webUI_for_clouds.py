@@ -61,7 +61,7 @@ def cloud_msst_infer_audio(selected_model, input_audio, store_dir, extract_instr
 
 	if selected_model:
 		assert download_model("msst", selected_model), i18n("模型下载失败, 请重试!")
-		return run_inference_single(selected_model, input_audio, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta)
+		return run_inference_single(selected_model, input_audio, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta)[0]
 
 
 def cloud_msst_infer_folder(selected_model, input_folder, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta):
@@ -69,7 +69,7 @@ def cloud_msst_infer_folder(selected_model, input_folder, store_dir, extract_ins
 
 	if selected_model:
 		assert download_model("msst", selected_model), i18n("模型下载失败, 请重试!")
-		return run_multi_inference(selected_model, input_folder, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta)
+		return run_multi_inference(selected_model, input_folder, store_dir, extract_instrumental, gpu_id, output_format, force_cpu, use_tta)[0]
 
 
 def cloud_vr_infer_audio(
