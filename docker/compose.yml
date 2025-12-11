@@ -10,9 +10,6 @@ services:
       #- ./pretrain/All_Models:/app/pretrain
       - /TTD-Data/msst/pretrain/All_Models:/app/pretrain
       - /TTD:/TTD  # 挂载整个TTD目录以支持项目级处理
-      - /TTD/04_应用/msst/INPUT:/app/input  # 保持兼容性
-      - /TTD/04_应用/msst/INPUT_BATCH:/app/input_batch
-      - /TTD/04_应用/msst/OUTPUT:/app/results  # 保持兼容性
     container_name: msst
     environment:
       - LANG=zh_CN.UTF-8
