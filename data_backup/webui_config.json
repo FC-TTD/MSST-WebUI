@@ -3,8 +3,9 @@
     "inference": {
         "model_type": null,
         "selected_model": null,
-        "input_dir": null,
-        "store_dir": null,
+        "input_dir": "/TTD/04_应用/msst/INPUT",
+        "store_dir": "/TTD/04_应用/msst/OUTPUT",
+        "batch_input_dir": "/TTD/04_应用/msst/INPUT_BATCH",
         "device": null,
         "output_format": "wav",
         "force_cpu": false,
