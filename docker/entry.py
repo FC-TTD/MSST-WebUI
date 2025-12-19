@@ -55,7 +55,7 @@ def create_app():
     fastapi_app = FastAPI()
 
     # 添加 CUDA 健康检查
-    setup_cuda_health(fastapi_app, ready_predicate=lambda: cuda.is_available())
+    setup_cuda_health(fastapi_app, ready_predicate=lambda: cuda.is_available(), enable_default_home=False)
 
     # 注册 API 路由（必须在 Gradio 挂载之前）
     register_routes(fastapi_app)
