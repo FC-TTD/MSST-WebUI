@@ -51,7 +51,9 @@ def _finalize_task_output(task_output_dir: str, output_dir: str) -> None:
         filenames = [f for f in filenames if not f.startswith(("@", "."))]
         for filename in filenames:
             src = os.path.join(root, filename)
-            dst = os.path.join(output_dir, filename)
+            rel_path = os.path.relpath(src, task_output_dir)
+            dst = os.path.join(output_dir, rel_path)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
             try:
                 os.replace(src, dst)
             except Exception:
