@@ -4,7 +4,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from api.models import ErrorResponse, ModelListResponse, TaskCreateRequest, TaskCreateResponse, TaskResultResponse, TaskStatusResponse
-from api.services import list_models, run_msst_batch_sse, run_msst_batch_sync
+from api.services import cancel_msst_sse_task, list_models, run_msst_batch_sse, run_msst_batch_sync
 from api.storage import get_storage
 
 
@@ -43,6 +43,14 @@ async def get_task_result(task_id: str) -> TaskResultResponse:
     result = storage.get_task_result(task_id)
     if not result:
         raise HTTPException(status_code=404, detail=ErrorResponse(error_message="task not found").dict())
+    return result
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=TaskResultResponse, responses={404: {"model": ErrorResponse}})
+async def cancel_task(task_id: str) -> TaskResultResponse:
+    result = cancel_msst_sse_task(task_id)
+    if not result:
+        raise HTTPException(status_code=404, detail=ErrorResponse(error_message="task not found or not cancelable").dict())
     return result
 
 

@@ -118,6 +118,7 @@ class SQLiteStorage(BaseStorage):
         conn = self._get_conn()
         try:
             cur = conn.cursor()
+            cur.execute("DELETE FROM task_files WHERE task_id = ?", (task_id,))
             for f in files:
                 cur.execute(
                     "INSERT INTO task_files (task_id, input_file, output_files, status, error) VALUES (?, ?, ?, ?, ?)",

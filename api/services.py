@@ -1,43 +1,48 @@
 from __future__ import annotations
 
 import json
+import logging
 import multiprocessing
 import os
 import re
 import shutil
+import signal
 import time
 from typing import Any, Dict, List, Optional
 
 from api.models import FileResult, ModelInfo, TaskCreateRequest, TaskResultResponse
 from api.storage import get_storage
+from api.task_results import collect_task_output_files
+from api.task_runtime import TaskRuntime, get_cancel_event, get_task_lock, get_task_runtime, register_task_runtime, unregister_task_runtime
 from utils.constant import MODELS_INFO, WEBUI_CONFIG
-from webui.msst import run_folder_batch_inference, run_inference
-from webui.utils import get_msst_model, i18n, load_configs, logger
+
+
+logger = logging.getLogger(__name__)
+
+
+def _i18n(msg: str) -> str:
+    try:
+        from webui.utils import i18n as _real_i18n
+
+        return _real_i18n(msg)
+    except Exception:
+        return msg
+
+
+def run_folder_batch_inference(*args, **kwargs):  # type: ignore[no-untyped-def]
+    raise RuntimeError("webui dependencies are not available")
+
+
+def run_inference(*args, **kwargs):  # type: ignore[no-untyped-def]
+    raise RuntimeError("webui dependencies are not available")
 
 
 def _validate_host_path(path: str) -> str | None:
     if path.startswith("/Volume/") or path.startswith("/Volumes/"):
-        return i18n("非法路径（疑似 macOS Volume 路径）: ") + path
+        return _i18n("非法路径（疑似 macOS Volume 路径）: ") + path
     if re.match(r"^[A-Za-z]:[\\/]", path):
-        return i18n("非法路径（疑似 Windows 盘符路径）: ") + path
+        return _i18n("非法路径（疑似 Windows 盘符路径）: ") + path
     return None
-
-
-def _parse_bool(value: Any, default: bool) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(int(value))
-    if isinstance(value, str):
-        s = value.strip().lower()
-        if s in {"1", "true", "yes", "y", "on"}:
-            return True
-        if s in {"0", "false", "no", "n", "off"}:
-            return False
-        return default
-    return default
 
 
 def _finalize_task_output(task_output_dir: str, output_dir: str) -> None:
@@ -66,6 +71,48 @@ def _finalize_task_output(task_output_dir: str, output_dir: str) -> None:
     shutil.rmtree(task_output_dir, ignore_errors=True)
 
 
+def cancel_msst_sse_task(task_id: str) -> TaskResultResponse | None:
+    runtime = get_task_runtime(task_id)
+    if not runtime:
+        return None
+
+    lock = get_task_lock(task_id)
+    with lock:
+        runtime = get_task_runtime(task_id)
+        if not runtime:
+            return None
+
+        storage = get_storage()
+
+        cancel_event = get_cancel_event(task_id)
+        cancel_event.set()
+
+        try:
+            os.kill(runtime.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            logger.exception(f"Failed to terminate task process: task_id={task_id}, pid={runtime.pid}")
+
+        files: List[FileResult] = []
+        try:
+            files = collect_task_output_files(runtime.task_output_dir)
+            storage.save_results(task_id, files)
+        except Exception:
+            logger.exception(f"Failed to collect/save partial results for canceled task: task_id={task_id}")
+
+        try:
+            _finalize_task_output(runtime.task_output_dir, runtime.output_dir)
+        except Exception:
+            logger.exception(f"Failed to finalize output dir for canceled task: task_id={task_id}")
+
+        storage.update_task(task_id, status="canceled")
+
+        unregister_task_runtime(task_id)
+
+        return TaskResultResponse(task_id=task_id, status="canceled", files=files)
+
+
 def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
     """同步（blocking）执行一次批量 MSST 分离，并记录任务结果。
 
@@ -91,7 +138,7 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
 
     # 简单校验路径
     if not os.path.exists(input_path):
-        msg = i18n("输入路径不存在: ") + input_path
+        msg = _i18n("输入路径不存在: ") + input_path
         logger.error(msg)
         storage.update_task(task_id, status="failed", error=msg)
         return TaskResultResponse(task_id=task_id, status="failed", files=[])
@@ -107,7 +154,7 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
             range_start = int(range_start_raw) if range_start_raw is not None else 1
             range_end = int(range_end_raw) if range_end_raw is not None else 0
         except Exception:
-            msg = i18n("range_start/range_end 必须为整数")
+            msg = _i18n("range_start/range_end 必须为整数")
             logger.error(msg)
             storage.update_task(task_id, status="failed", error=msg)
             return TaskResultResponse(task_id=task_id, status="failed", files=[])
@@ -116,23 +163,41 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
             range_start = 1
 
         names = sorted(os.listdir(input_path))
-        # 过滤出音频和视频文件，避免非媒体文件和NAS系统文件干扰Range索引
-        media_names = []
+        # 过滤出音频/视频文件（文件场景）或保留子目录（项目/剧集场景），避免非媒体文件和NAS系统文件干扰 Range 索引
+        filtered_names = []
         for name in names:
             # 跳过以@或.开头的文件（NAS系统文件）
             if name.startswith(('@', '.')):
                 continue
             file_path = os.path.join(input_path, name)
+            if os.path.isdir(file_path):
+                filtered_names.append(name)
+                continue
             if os.path.isfile(file_path):
                 # 检查文件扩展名是否为音频或视频格式
                 # librosa支持通过ffmpeg提取视频中的音频
-                if name.lower().endswith(('.wav', '.mp3', '.flac', '.m4a', '.aac', '.ogg',  # 音频格式
-                                           '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm')):  # 视频格式
-                    media_names.append(name)
-        names = media_names
+                if name.lower().endswith(
+                    (
+                        '.wav',
+                        '.mp3',
+                        '.flac',
+                        '.m4a',
+                        '.aac',
+                        '.ogg',
+                        '.mp4',
+                        '.avi',
+                        '.mkv',
+                        '.mov',
+                        '.wmv',
+                        '.flv',
+                        '.webm',
+                    )
+                ):
+                    filtered_names.append(name)
+        names = filtered_names
         total = len(names)
         if total == 0:
-            msg = i18n("输入目录中没有找到媒体文件: ") + input_path
+            msg = _i18n("输入目录中没有找到媒体文件: ") + input_path
             logger.error(msg)
             storage.update_task(task_id, status="failed", error=msg)
             return TaskResultResponse(task_id=task_id, status="failed", files=[])
@@ -141,7 +206,7 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
             range_end = total
 
         if range_end < range_start or range_start > total:
-            msg = i18n("range_start/range_end 范围无效")
+            msg = _i18n("range_start/range_end 范围无效")
             logger.error(msg)
             storage.update_task(task_id, status="failed", error=msg)
             return TaskResultResponse(task_id=task_id, status="failed", files=[])
@@ -183,6 +248,8 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
     output_format = req.params.get("output_format") or "wav"
     # 复用 WebUI 已保存的 use_tta 设置，忽略 API 传参
     try:
+        from webui.utils import load_configs
+
         _webui_cfg = load_configs(WEBUI_CONFIG)
         use_tta = bool(_webui_cfg.get("inference", {}).get("use_tta", True))
     except Exception:
@@ -271,7 +338,10 @@ def list_models(model_class: str | None = None) -> List[ModelInfo]:
     - 可选按 model_class 过滤，例如 "VR_Models"、"multi_stem_models" 等。
     """
 
-    from webui.utils import load_configs as _load_configs  # 避免和上面 import 冲突
+    try:
+        from webui.utils import load_configs as _load_configs  # 避免和上面 import 冲突
+    except Exception as e:
+        raise RuntimeError("webui dependencies are not available") from e
 
     try:
         config = _load_configs(MODELS_INFO)
@@ -336,6 +406,12 @@ def run_msst_batch_sse(req: TaskCreateRequest):
     storage = get_storage()
     task_id = storage.create_task(status="running", message=None)
 
+    try:
+        from webui.msst import run_inference as _run_inference
+        from webui.utils import get_msst_model, load_configs
+    except Exception as e:
+        raise RuntimeError("webui dependencies are not available") from e
+
     input_path = os.path.abspath(req.input_path)
     output_dir = os.path.abspath(req.output_dir)
 
@@ -347,11 +423,14 @@ def run_msst_batch_sse(req: TaskCreateRequest):
         return
 
     if not os.path.exists(input_path):
-        msg = i18n("输入路径不存在: ") + input_path
+        msg = _i18n("输入路径不存在: ") + input_path
         logger.error(msg)
         storage.update_task(task_id, status="failed", error=msg)
         yield _sse_event("error", {"task_id": task_id, "message": msg})
         return
+
+    # alias to keep downstream code unchanged
+    run_inference = _run_inference
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -366,7 +445,7 @@ def run_msst_batch_sse(req: TaskCreateRequest):
             range_start = int(range_start_raw) if range_start_raw is not None else 1
             range_end = int(range_end_raw) if range_end_raw is not None else 0
         except Exception:
-            msg = i18n("range_start/range_end 必须为整数")
+            msg = _i18n("range_start/range_end 必须为整数")
             logger.error(msg)
             storage.update_task(task_id, status="failed", error=msg)
             yield _sse_event("error", {"task_id": task_id, "message": msg})
@@ -376,23 +455,41 @@ def run_msst_batch_sse(req: TaskCreateRequest):
             range_start = 1
 
         names = sorted(os.listdir(input_path))
-        # 过滤出音频和视频文件，避免非媒体文件和NAS系统文件干扰Range索引
-        media_names = []
+        # 过滤出音频/视频文件（文件场景）或保留子目录（项目/剧集场景），避免非媒体文件和NAS系统文件干扰 Range 索引
+        filtered_names = []
         for name in names:
             # 跳过以@或.开头的文件（NAS系统文件）
             if name.startswith(('@', '.')):
                 continue
             file_path = os.path.join(input_path, name)
+            if os.path.isdir(file_path):
+                filtered_names.append(name)
+                continue
             if os.path.isfile(file_path):
                 # 检查文件扩展名是否为音频或视频格式
                 # librosa支持通过ffmpeg提取视频中的音频
-                if name.lower().endswith(('.wav', '.mp3', '.flac', '.m4a', '.aac', '.ogg',  # 音频格式
-                                           '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm')):  # 视频格式
-                    media_names.append(name)
-        names = media_names
+                if name.lower().endswith(
+                    (
+                        '.wav',
+                        '.mp3',
+                        '.flac',
+                        '.m4a',
+                        '.aac',
+                        '.ogg',
+                        '.mp4',
+                        '.avi',
+                        '.mkv',
+                        '.mov',
+                        '.wmv',
+                        '.flv',
+                        '.webm',
+                    )
+                ):
+                    filtered_names.append(name)
+        names = filtered_names
         total = len(names)
         if total == 0:
-            msg = i18n("输入目录中没有找到音频文件: ") + input_path
+            msg = _i18n("输入目录中没有找到音频文件: ") + input_path
             logger.error(msg)
             storage.update_task(task_id, status="failed", error=msg)
             yield _sse_event("error", {"task_id": task_id, "message": msg})
@@ -402,7 +499,7 @@ def run_msst_batch_sse(req: TaskCreateRequest):
             range_end = total
 
         if range_end < range_start or range_start > total:
-            msg = i18n("range_start/range_end 范围无效")
+            msg = _i18n("range_start/range_end 范围无效")
             logger.error(msg)
             storage.update_task(task_id, status="failed", error=msg)
             yield _sse_event("error", {"task_id": task_id, "message": msg})
@@ -447,7 +544,7 @@ def run_msst_batch_sse(req: TaskCreateRequest):
     try:
         # 构建推理所需参数（参考 webui.msst.start_inference）
         if not req.model_name:
-            msg = i18n("请选择模型")
+            msg = _i18n("请选择模型")
             storage.update_task(task_id, status="failed", error=msg)
             yield _sse_event("error", {"task_id": task_id, "message": msg})
             return
@@ -515,7 +612,25 @@ def run_msst_batch_sse(req: TaskCreateRequest):
             proc.start()
             logger.debug(f"Inference process (SSE) started, PID: {proc.pid}")
 
+            register_task_runtime(
+                TaskRuntime(
+                    task_id=task_id,
+                    pid=int(proc.pid or 0),
+                    task_output_dir=task_output_dir,
+                    output_dir=output_dir,
+                )
+            )
+
             while proc.is_alive():
+                if get_cancel_event(task_id).is_set():
+                    try:
+                        if proc.pid:
+                            os.kill(int(proc.pid), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    except Exception:
+                        logger.exception(f"Failed to terminate SSE subprocess: task_id={task_id}, pid={proc.pid}")
+                    break
                 flag = callback["flag"]
                 if flag[0]:
                     break
@@ -544,53 +659,39 @@ def run_msst_batch_sse(req: TaskCreateRequest):
                     )
                 time.sleep(0.5)
 
-            proc.join()
+            if get_cancel_event(task_id).is_set():
+                proc.join(timeout=2)
+            else:
+                proc.join()
             flag = callback["flag"]
+
+        if get_cancel_event(task_id).is_set():
+            stored = storage.get_task_result(task_id)
+            result = stored
+            if result is None or result.status != "canceled":
+                result = cancel_msst_sse_task(task_id)
+            if result is None:
+                storage.update_task(task_id, status="canceled")
+                yield _sse_event("canceled", {"task_id": task_id, "status": "canceled", "files": []})
+                return
+
+            files_payload = [
+                (f.model_dump() if hasattr(f, "model_dump") else f.dict())  # type: ignore[attr-defined]
+                for f in result.files
+            ]
+            yield _sse_event(
+                "canceled",
+                {"task_id": task_id, "status": "canceled", "files": files_payload},
+            )
+            return
 
         if flag[0] == 1:
             duration = round(time.time() - start_time, 2)
             storage.update_task(task_id, status="success", progress=1.0)
             
-            # 收集实际生成的输出文件
             files: List[FileResult] = []
             try:
-                # 扫描当前任务的输出目录，收集新生成的文件
-                if os.path.exists(task_output_dir):
-                    output_files = []
-                    for root, dirnames, filenames in os.walk(task_output_dir):
-                        dirnames[:] = [d for d in dirnames if not d.startswith(("@", "."))]
-                        filenames = [f for f in filenames if not f.startswith(("@", "."))]
-                        for filename in filenames:
-                            if filename.endswith(('.wav', '.mp3')):
-                                file_path = os.path.join(root, filename)
-                                output_files.append(os.path.basename(file_path))
-                    
-                    # 根据文件名推断输入文件并分组
-                    input_file_groups = {}
-                    for output_file in output_files:
-                        # 尝试从输出文件名推断输入文件
-                        # 例如: test1_Vocals.wav -> test1
-                        input_name = None
-                        if "_Vocals" in output_file:
-                            input_name = output_file.split("_Vocals")[0]
-                        elif "_Instrumental" in output_file:
-                            input_name = output_file.split("_Instrumental")[0]
-                        else:
-                            # 如果无法推断，使用通用名称
-                            input_name = f"file_{len(input_file_groups) + 1}"
-                        
-                        if input_name not in input_file_groups:
-                            input_file_groups[input_name] = []
-                        input_file_groups[input_name].append(output_file)
-                    
-                    # 为每个输入文件创建一个 FileResult
-                    for input_name, files_list in input_file_groups.items():
-                        files.append(FileResult(
-                            input_file=input_name,
-                            output_files=files_list,
-                            status="success"
-                        ))
-                        
+                files = collect_task_output_files(task_output_dir)
                 logger.info(f"Collected {len(files)} file results from {task_output_dir}")
                 storage.save_results(task_id, files)
             except Exception as e:
@@ -606,6 +707,7 @@ def run_msst_batch_sse(req: TaskCreateRequest):
                 "completed",
                 {"task_id": task_id, "status": "success", "duration": duration, "files": files_payload},
             )
+            unregister_task_runtime(task_id)
         elif flag[0] == -1:
             err_msg = str(flag[1])
             storage.update_task(task_id, status="failed", error=err_msg)
@@ -614,6 +716,7 @@ def run_msst_batch_sse(req: TaskCreateRequest):
                 "error",
                 {"task_id": task_id, "status": "failed", "message": err_msg},
             )
+            unregister_task_runtime(task_id)
         else:
             msg = "MSST inference process exited unexpectedly"
             storage.update_task(task_id, status="failed", error=msg)
@@ -622,6 +725,7 @@ def run_msst_batch_sse(req: TaskCreateRequest):
                 "error",
                 {"task_id": task_id, "status": "failed", "message": msg},
             )
+            unregister_task_runtime(task_id)
     except Exception as e:  # pragma: no cover - 防御性分支
         err_msg = f"MSST batch inference (SSE) failed: {e}"
         logger.exception(err_msg)
@@ -632,5 +736,6 @@ def run_msst_batch_sse(req: TaskCreateRequest):
             {"task_id": task_id, "status": "failed", "message": err_msg},
         )
     finally:
+        unregister_task_runtime(task_id)
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)

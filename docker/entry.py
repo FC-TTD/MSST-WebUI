@@ -80,11 +80,23 @@ if __name__ == "__main__":
         logger.info(i18n("配置文件已复制"))
     else:
         logger.info(i18n("配置文件已存在, 跳过复制"))
+
+    data_files = ["webui_config.json", "language.json", "models_info.json"]
     if not os.path.exists("data"):
         shutil.copytree("data_backup", "data")
         logger.info(i18n("数据文件已复制"))
     else:
-        logger.info(i18n("数据文件已存在, 跳过复制"))
+        os.makedirs("data", exist_ok=True)
+        missing = []
+        for name in data_files:
+            target = os.path.join("data", name)
+            if not os.path.exists(target):
+                shutil.copy(os.path.join("data_backup", name), target)
+                missing.append(name)
+        if missing:
+            logger.info(i18n("缺失数据已补全: ") + ", ".join(missing))
+        else:
+            logger.info(i18n("数据文件已存在, 跳过复制"))
 
     app = create_app()
 
