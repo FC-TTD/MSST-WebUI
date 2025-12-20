@@ -181,7 +181,12 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
         gpu_id = [0]
 
     output_format = req.params.get("output_format") or "wav"
-    use_tta = _parse_bool(req.params.get("use_tta"), True)
+    # 复用 WebUI 已保存的 use_tta 设置，忽略 API 传参
+    try:
+        _webui_cfg = load_configs(WEBUI_CONFIG)
+        use_tta = bool(_webui_cfg.get("inference", {}).get("use_tta", True))
+    except Exception:
+        use_tta = True
 
     task_output_dir = os.path.join(output_dir, f"task_{task_id}")
 
@@ -432,7 +437,8 @@ def run_msst_batch_sse(req: TaskCreateRequest):
     gpu_id = req.params.get("device_ids")
     output_format = req.params.get("output_format") or "wav"
     force_cpu = bool(req.params.get("force_cpu", False))
-    use_tta = _parse_bool(req.params.get("use_tta"), True)
+    # 复用 WebUI 已保存的 use_tta 设置，忽略 API 传参
+    use_tta = True
 
     try:
         # 构建推理所需参数（参考 webui.msst.start_inference）
