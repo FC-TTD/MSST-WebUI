@@ -45,6 +45,7 @@ SSE 流式调用示例（适合长任务与前端/agent 实时感知进度）::
         range_end=6,
     ):
         # event.event 可能是 "start" / "progress" / "completed" / "error" / None
+        # 当调用 cancel 接口中断任务时，服务端会发送 "canceled" 事件，并在 event.data.files 返回已完成的部分结果
         print(event.event, event.data)
 
 项目级处理示例（支持任意项目目录结构）::
@@ -372,6 +373,16 @@ class MSSTApiClient:
         """查询任务结果。"""
 
         resp = self._request("GET", f"/api/v1/tasks/{task_id}/result")
+        return resp.json()
+
+
+    def cancel_task(self, task_id: str) -> Dict[str, Any]:
+        """取消（中断）一个 SSE 任务。
+
+        服务端会尽可能保留并返回已生成的输出文件（status=canceled）。
+        """
+
+        resp = self._request("POST", f"/api/v1/tasks/{task_id}/cancel")
         return resp.json()
 
     # --------
