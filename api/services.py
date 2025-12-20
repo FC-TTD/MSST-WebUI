@@ -3,15 +3,65 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import re
 import shutil
 import time
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 from api.models import FileResult, ModelInfo, TaskCreateRequest, TaskResultResponse
 from api.storage import get_storage
-from utils.constant import WEBUI_CONFIG, MODELS_INFO
+from utils.constant import MODELS_INFO, WEBUI_CONFIG
 from webui.msst import run_folder_batch_inference, run_inference
-from webui.utils import i18n, load_configs, get_msst_model, logger
+from webui.utils import get_msst_model, i18n, load_configs, logger
+
+
+def _validate_host_path(path: str) -> str | None:
+    if path.startswith("/Volume/") or path.startswith("/Volumes/"):
+        return i18n("非法路径（疑似 macOS Volume 路径）: ") + path
+    if re.match(r"^[A-Za-z]:[\\/]", path):
+        return i18n("非法路径（疑似 Windows 盘符路径）: ") + path
+    return None
+
+
+def _parse_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(int(value))
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in {"1", "true", "yes", "y", "on"}:
+            return True
+        if s in {"0", "false", "no", "n", "off"}:
+            return False
+        return default
+    return default
+
+
+def _finalize_task_output(task_output_dir: str, output_dir: str) -> None:
+    if not task_output_dir or not os.path.exists(task_output_dir):
+        return
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    for root, dirnames, filenames in os.walk(task_output_dir):
+        dirnames[:] = [d for d in dirnames if not d.startswith(("@", "."))]
+        filenames = [f for f in filenames if not f.startswith(("@", "."))]
+        for filename in filenames:
+            src = os.path.join(root, filename)
+            dst = os.path.join(output_dir, filename)
+            try:
+                os.replace(src, dst)
+            except Exception:
+                try:
+                    shutil.copy2(src, dst)
+                    os.remove(src)
+                except Exception:
+                    logger.exception(f"Failed to move output file: {src} -> {dst}")
+
+    shutil.rmtree(task_output_dir, ignore_errors=True)
 
 
 def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
@@ -30,6 +80,12 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
 
     input_path = os.path.abspath(req.input_path)
     output_dir = os.path.abspath(req.output_dir)
+
+    path_err = _validate_host_path(req.input_path) or _validate_host_path(req.output_dir)
+    if path_err:
+        logger.error(path_err)
+        storage.update_task(task_id, status="failed", error=path_err)
+        return TaskResultResponse(task_id=task_id, status="failed", files=[])
 
     # 简单校验路径
     if not os.path.exists(input_path):
@@ -123,13 +179,13 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
         gpu_id = [0]
 
     output_format = req.params.get("output_format") or "wav"
-    use_tta = bool(req.params.get("use_tta", False))
+    use_tta = _parse_bool(req.params.get("use_tta"), True)
+
+    task_output_dir = os.path.join(output_dir, f"task_{task_id}")
 
     try:
-        # 为每个任务创建独立的输出子目录
-        task_output_dir = os.path.join(output_dir, f"task_{task_id}")
         os.makedirs(task_output_dir, exist_ok=True)
-        
+
         message, _ = run_folder_batch_inference(
             req.model_name,
             input_path_for_infer,
@@ -140,8 +196,7 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
             force_cpu,
             use_tta,
         )
-        # run_folder_batch_inference 返回的是一个字符串消息
-        # 这里简单认为执行成功即 status=success，失败时由异常分支捕获
+
         logger.info(message)
         storage.update_task(task_id, status="success", progress=1.0)
 
@@ -151,12 +206,13 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
             # 扫描当前任务的输出目录，收集新生成的文件
             if os.path.exists(task_output_dir):
                 output_files = []
-                for root, _, filenames in os.walk(task_output_dir):
+                for root, dirnames, filenames in os.walk(task_output_dir):
+                    dirnames[:] = [d for d in dirnames if not d.startswith(("@", "."))]
+                    filenames = [f for f in filenames if not f.startswith(("@", "."))]
                     for filename in filenames:
                         if filename.endswith(('.wav', '.mp3')):
                             file_path = os.path.join(root, filename)
-                            rel_path = os.path.relpath(file_path, task_output_dir)
-                            output_files.append(rel_path)
+                            output_files.append(os.path.basename(file_path))
                 
                 # 根据文件名推断输入文件并分组
                 input_file_groups = {}
@@ -196,6 +252,7 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
         storage.update_task(task_id, status="failed", error=err_msg)
         return TaskResultResponse(task_id=task_id, status="failed", files=[])
     finally:
+        _finalize_task_output(task_output_dir, output_dir)
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)
 
@@ -275,6 +332,13 @@ def run_msst_batch_sse(req: TaskCreateRequest):
     input_path = os.path.abspath(req.input_path)
     output_dir = os.path.abspath(req.output_dir)
 
+    path_err = _validate_host_path(req.input_path) or _validate_host_path(req.output_dir)
+    if path_err:
+        logger.error(path_err)
+        storage.update_task(task_id, status="failed", error=path_err)
+        yield _sse_event("error", {"task_id": task_id, "message": path_err})
+        return
+
     if not os.path.exists(input_path):
         msg = i18n("输入路径不存在: ") + input_path
         logger.error(msg)
@@ -283,6 +347,8 @@ def run_msst_batch_sse(req: TaskCreateRequest):
         return
 
     os.makedirs(output_dir, exist_ok=True)
+
+    task_output_dir = os.path.join(output_dir, f"task_{task_id}")
 
     range_start_raw = req.params.get("range_start")
     range_end_raw = req.params.get("range_end")
@@ -364,7 +430,7 @@ def run_msst_batch_sse(req: TaskCreateRequest):
     gpu_id = req.params.get("device_ids")
     output_format = req.params.get("output_format") or "wav"
     force_cpu = bool(req.params.get("force_cpu", False))
-    use_tta = bool(req.params.get("use_tta", False))
+    use_tta = _parse_bool(req.params.get("use_tta"), True)
 
     try:
         # 构建推理所需参数（参考 webui.msst.start_inference）
@@ -397,8 +463,6 @@ def run_msst_batch_sse(req: TaskCreateRequest):
         flac_bit_depth = webui_config["settings"].get("flac_bit_depth", "PCM_24")
         mp3_bit_rate = webui_config["settings"].get("mp3_bit_rate", "320k")
 
-        # 为每个任务创建独立的输出子目录
-        task_output_dir = os.path.join(output_dir, f"task_{task_id}")
         os.makedirs(task_output_dir, exist_ok=True)
         
         store_dict = _build_store_dict(task_output_dir, extract_instrumental, config_path)
@@ -481,12 +545,13 @@ def run_msst_batch_sse(req: TaskCreateRequest):
                 # 扫描当前任务的输出目录，收集新生成的文件
                 if os.path.exists(task_output_dir):
                     output_files = []
-                    for root, _, filenames in os.walk(task_output_dir):
+                    for root, dirnames, filenames in os.walk(task_output_dir):
+                        dirnames[:] = [d for d in dirnames if not d.startswith(("@", "."))]
+                        filenames = [f for f in filenames if not f.startswith(("@", "."))]
                         for filename in filenames:
                             if filename.endswith(('.wav', '.mp3')):
                                 file_path = os.path.join(root, filename)
-                                rel_path = os.path.relpath(file_path, task_output_dir)
-                                output_files.append(rel_path)
+                                output_files.append(os.path.basename(file_path))
                     
                     # 根据文件名推断输入文件并分组
                     input_file_groups = {}
@@ -518,14 +583,21 @@ def run_msst_batch_sse(req: TaskCreateRequest):
                 storage.save_results(task_id, files)
             except Exception as e:
                 logger.warning(f"Failed to collect output files: {e}")
+
+            _finalize_task_output(task_output_dir, output_dir)
             
+            files_payload = [
+                (f.model_dump() if hasattr(f, "model_dump") else f.dict())  # type: ignore[attr-defined]
+                for f in files
+            ]
             yield _sse_event(
                 "completed",
-                {"task_id": task_id, "status": "success", "duration": duration, "files": files},
+                {"task_id": task_id, "status": "success", "duration": duration, "files": files_payload},
             )
         elif flag[0] == -1:
             err_msg = str(flag[1])
             storage.update_task(task_id, status="failed", error=err_msg)
+            _finalize_task_output(task_output_dir, output_dir)
             yield _sse_event(
                 "error",
                 {"task_id": task_id, "status": "failed", "message": err_msg},
@@ -533,6 +605,7 @@ def run_msst_batch_sse(req: TaskCreateRequest):
         else:
             msg = "MSST inference process exited unexpectedly"
             storage.update_task(task_id, status="failed", error=msg)
+            _finalize_task_output(task_output_dir, output_dir)
             yield _sse_event(
                 "error",
                 {"task_id": task_id, "status": "failed", "message": msg},
@@ -541,6 +614,7 @@ def run_msst_batch_sse(req: TaskCreateRequest):
         err_msg = f"MSST batch inference (SSE) failed: {e}"
         logger.exception(err_msg)
         storage.update_task(task_id, status="failed", error=err_msg)
+        _finalize_task_output(task_output_dir, output_dir)
         yield _sse_event(
             "error",
             {"task_id": task_id, "status": "failed", "message": err_msg},
