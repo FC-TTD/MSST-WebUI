@@ -7,7 +7,7 @@ services:
       - 8662:7860
     volumes:
       - ./root:/root
-      #- ./pretrain/All_Models:/app/pretrain
+      - /TTD-Data/msst/data:/app/data
       - /TTD-Data/msst/pretrain/All_Models:/app/pretrain
       - /TTD:/TTD  # 挂载整个TTD目录以支持项目级处理
     container_name: msst
