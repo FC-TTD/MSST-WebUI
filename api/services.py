@@ -657,7 +657,7 @@ def run_msst_batch_sse(req: TaskCreateRequest):
                             "current_file": current_file,
                         },
                     )
-                time.sleep(0.5)
+                time.sleep(0.1)
 
             if get_cancel_event(task_id).is_set():
                 proc.join(timeout=2)
