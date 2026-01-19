@@ -23,17 +23,12 @@ echo -e "${NC}"
 # 根据部署类型设置目标主机和标签
 case "$DEPLOY_TYPE" in
     "stage")
-        TARGET_HOST="ttd-edge"
+        TARGET_HOST="ttd-worker"
         TAGS="stage"
         echo -e "${GREEN}开始部署 MSST-WebUI Gradio 应用到 $TARGET_HOST${NC}"
         ;;
-    "api")
-        TARGET_HOST="ttd-worker"
-        TAGS="api"
-        echo -e "${GREEN}开始部署 MSST-WebUI API 服务器到 $TARGET_HOST${NC}"
-        ;;
     *)
-        echo -e "${RED}错误: 无效的部署类型 '$DEPLOY_TYPE'。请使用 'stage' 或 'api'${NC}"
+        echo -e "${RED}错误: 无效的部署类型 '$DEPLOY_TYPE'。请使用 'stage'${NC}"
         exit 1
         ;;
 esac

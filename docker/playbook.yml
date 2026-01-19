@@ -1,6 +1,6 @@
 ---
 - name: 部署MSST-WebUI Gradio应用到ttd-stage环境
-  hosts: ttd-edge
+  hosts: ttd-worker
   become: true
   vars:
     project_dir: /opt/msst-webui
