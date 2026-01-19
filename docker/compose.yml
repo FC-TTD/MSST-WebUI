@@ -1,5 +1,5 @@
 services:
-  msst-ui:
+  msst:
     image: msst-ui:latest
     build: . 
     restart: always
@@ -25,3 +25,9 @@ services:
               capabilities: [gpu]
     tty: true
     stdin_open: true
+    networks:
+      - caddy
+
+networks:
+  caddy:
+    external: true
