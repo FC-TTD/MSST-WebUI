@@ -23,7 +23,7 @@ echo -e "${NC}"
 # 根据部署类型设置目标主机和标签
 case "$DEPLOY_TYPE" in
     "stage")
-        TARGET_HOST="ttd-worker"
+        TARGET_HOST="ttd-edge"
         TAGS="stage"
         echo -e "${GREEN}开始部署 MSST-WebUI Gradio 应用到 $TARGET_HOST${NC}"
         ;;
