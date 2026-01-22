@@ -27,6 +27,9 @@ services:
     stdin_open: true
     networks:
       - caddy
+    labels:
+      caddy: "http://msst"
+      caddy.reverse_proxy: "{{upstreams 7860}}"
 
 networks:
   caddy:
