@@ -19,6 +19,9 @@
         dest: "{{ project_dir }}"
         rsync_opts:
           - "--exclude=.git"
+          - "--exclude=.venv"
+          - "--exclude=.pytest_cache"
+          - "--exclude=data"
           - "--exclude=.conda"
           - "--exclude=pretrain"
           - "--exclude=.github"

@@ -27,8 +27,10 @@ class InferenceBusyError(RuntimeError):
 
 inference_semaphore = multiprocessing.Semaphore(2)
 
+_semaphore_count = 0
+_semaphore_lock = threading.Lock()
 
-INFERENCE_QUEUE_TIMEOUT_S = 3600
+INFERENCE_QUEUE_TIMEOUT_S = float(os.getenv("MSST_QUEUE_TIMEOUT_S", "3600"))
 
 
 class _QueueCallback:
@@ -37,26 +39,47 @@ class _QueueCallback:
 
     def __setitem__(self, key: str, value: Any) -> None:
         try:
-            self._q.put((key, value))
-        except Exception:
-            pass
+            self._q.put((key, value), timeout=1.0)
+        except Exception as e:
+            # 区分不同类型的异常
+            if "full" in str(e).lower():
+                logger.warning(f"Queue full, dropping {key} update")
+            elif "closed" in str(e).lower() or "broken" in str(e).lower():
+                logger.error(f"Queue closed/broken for {key}: {e}")
+            else:
+                logger.exception(f"Queue error for {key}: {e}")
+            # 不再静默忽略，记录错误但继续执行
 
 
 def _try_acquire_inference_slot() -> bool:
+    global _semaphore_count
     try:
-        return bool(inference_semaphore.acquire(block=False))
+        result = bool(inference_semaphore.acquire(block=False))
+        if result:
+            with _semaphore_lock:
+                _semaphore_count += 1
+        return result
     except TypeError:
-        return bool(inference_semaphore.acquire(False))
+        result = bool(inference_semaphore.acquire(False))
+        if result:
+            with _semaphore_lock:
+                _semaphore_count += 1
+        return result
 
 
 def _release_inference_slot() -> None:
-    try:
-        inference_semaphore.release()
-    except ValueError:
-        pass
+    global _semaphore_count
+    with _semaphore_lock:
+        if _semaphore_count > 0:
+            try:
+                inference_semaphore.release()
+                _semaphore_count -= 1
+            except ValueError:
+                # 信号量已经达到最大值，重置计数器
+                _semaphore_count = 0
 
 
-def _terminate_pid(pid: int, *, term_timeout_s: float = 3.0) -> None:
+def _terminate_pid(pid: int, *, term_timeout_s: float = 10.0) -> None:
     if pid <= 0:
         return
 
@@ -247,8 +270,11 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
 
     if os.path.isfile(input_path):
         import tempfile
+        import uuid
 
-        tmp_base = os.path.join(tempfile.gettempdir(), f".msst_api_single_{task_id}")
+        # 使用uuid确保临时目录名唯一，避免并发冲突
+        unique_id = str(uuid.uuid4())[:8]
+        tmp_base = os.path.join(tempfile.gettempdir(), f".msst_api_single_{task_id}_{unique_id}")
         os.makedirs(tmp_base, exist_ok=True)
         src = input_path
         dst = os.path.join(tmp_base, os.path.basename(src))
@@ -777,7 +803,7 @@ def run_msst_batch_sse(req: TaskCreateRequest):
                     elif k == "flag":
                         flag = v
 
-            while proc.is_alive():
+            while proc.is_alive() and progress < 1.0:
                 _drain_queue()
 
                 if cancel_event.is_set():
@@ -794,9 +820,26 @@ def run_msst_batch_sse(req: TaskCreateRequest):
                     break
 
                 if info.get("index", -1) != -1:
-                    processed = int(info.get("index") or 0)
-                    total = int(info.get("total") or 0)
+                    try:
+                        processed = int(info.get("index") or 0)
+                    except (ValueError, TypeError):
+                        processed = 0
+                        logger.warning(f"Invalid index value: {info.get('index')}")
+                    
+                    try:
+                        total = int(info.get("total") or 0)
+                    except (ValueError, TypeError):
+                        total = 0
+                        logger.warning(f"Invalid total value: {info.get('total')}")
+                    
                     current_file = str(info.get("name") or "")
+                    
+                    # 验证数据合理性
+                    if processed < 0:
+                        processed = 0
+                    if total < 0:
+                        total = 0
+                    
                     storage.update_task(
                         task_id,
                         progress=progress,

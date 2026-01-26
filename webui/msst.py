@@ -99,7 +99,7 @@ def run_inference_single(selected_model, input_audio, store_dir, extract_instrum
 	input_folder = None
 
 	if not input_audio:
-		return i18n("请上传至少一个音频文件!")
+		return i18n("请上传至少一个音频文件!"), []
 	if os.path.exists(TEMP_PATH):
 		shutil.rmtree(TEMP_PATH)
 
