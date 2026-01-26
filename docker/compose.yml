@@ -1,8 +1,14 @@
 services:
   msst:
     image: msst-ui:latest
-    build: . 
+    build: 
+      context: .
+      extra_hosts:
+        - "pypi-server:192.168.100.14"
     restart: always
+    pids_limit: 200
+    cpus: '12.0'
+    mem_limit: 64g
     ports:
       - 8662:7860
     volumes:

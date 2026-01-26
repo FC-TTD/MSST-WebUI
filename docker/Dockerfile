@@ -14,10 +14,7 @@ WORKDIR /app
 RUN  --mount=type=bind,target=/tmp/requirements.txt,source=requirements.txt \
     pip install --no-cache-dir -r /tmp/requirements.txt --only-binary=samplerate
 
-# RUN pip uninstall -y librosa \
-#      && pip install tools/webUI_for_clouds/librosa-0.9.2-py3-none-any.whl
-
-RUN pip install "ttd_fastapi_utils>=0.2.1" --index-url http://pypi-server/simple --trusted-host pypi-server
+RUN pip install "ttd_fastapi_utils>=0.2.4" --index-url http://pypi-server/simple --trusted-host pypi-server
 
 COPY . /app
 

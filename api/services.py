@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import signal
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,91 @@ from utils.constant import MODELS_INFO, WEBUI_CONFIG
 
 
 logger = logging.getLogger(__name__)
+
+
+class InferenceBusyError(RuntimeError):
+    pass
+
+
+inference_semaphore = multiprocessing.Semaphore(2)
+
+
+INFERENCE_QUEUE_TIMEOUT_S = 3600
+
+
+class _QueueCallback:
+    def __init__(self, q: multiprocessing.queues.Queue):  # type: ignore[name-defined]
+        self._q = q
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        try:
+            self._q.put((key, value))
+        except Exception:
+            pass
+
+
+def _try_acquire_inference_slot() -> bool:
+    try:
+        return bool(inference_semaphore.acquire(block=False))
+    except TypeError:
+        return bool(inference_semaphore.acquire(False))
+
+
+def _release_inference_slot() -> None:
+    try:
+        inference_semaphore.release()
+    except ValueError:
+        pass
+
+
+def _terminate_pid(pid: int, *, term_timeout_s: float = 3.0) -> None:
+    if pid <= 0:
+        return
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except Exception:
+        logger.exception(f"Failed to SIGTERM pid={pid}")
+        return
+
+    deadline = time.time() + term_timeout_s
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return
+        except Exception:
+            break
+        time.sleep(0.05)
+
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except Exception:
+        logger.exception(f"Failed to SIGKILL pid={pid}")
+
+
+def _acquire_inference_slot_or_wait(*, cancel_event: threading.Event | None = None, timeout_s: float = INFERENCE_QUEUE_TIMEOUT_S) -> bool:
+    deadline = time.time() + float(timeout_s)
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            return False
+
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return False
+
+        step = 1.0 if remaining > 1.0 else remaining
+        try:
+            ok = bool(inference_semaphore.acquire(timeout=step))
+        except TypeError:
+            ok = bool(inference_semaphore.acquire(True, step))
+
+        if ok:
+            return True
 
 
 def _i18n(msg: str) -> str:
@@ -74,7 +160,16 @@ def _finalize_task_output(task_output_dir: str, output_dir: str) -> None:
 def cancel_msst_sse_task(task_id: str) -> TaskResultResponse | None:
     runtime = get_task_runtime(task_id)
     if not runtime:
-        return None
+        storage = get_storage()
+        status = storage.get_task_status(task_id)
+        if not status:
+            return None
+
+        cancel_event = get_cancel_event(task_id)
+        cancel_event.set()
+        storage.update_task(task_id, status="canceled")
+        unregister_task_runtime(task_id)
+        return TaskResultResponse(task_id=task_id, status="canceled", files=[])
 
     lock = get_task_lock(task_id)
     with lock:
@@ -88,7 +183,7 @@ def cancel_msst_sse_task(task_id: str) -> TaskResultResponse | None:
         cancel_event.set()
 
         try:
-            os.kill(runtime.pid, signal.SIGTERM)
+            _terminate_pid(runtime.pid)
         except ProcessLookupError:
             pass
         except Exception:
@@ -149,6 +244,21 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
     range_end_raw = req.params.get("range_end")
     input_path_for_infer = input_path
     cleanup_dir: str | None = None
+
+    if os.path.isfile(input_path):
+        import tempfile
+
+        tmp_base = os.path.join(tempfile.gettempdir(), f".msst_api_single_{task_id}")
+        os.makedirs(tmp_base, exist_ok=True)
+        src = input_path
+        dst = os.path.join(tmp_base, os.path.basename(src))
+        try:
+            os.symlink(src, dst)
+        except Exception:
+            shutil.copy2(src, dst)
+        input_path_for_infer = tmp_base
+        cleanup_dir = tmp_base
+
     if os.path.isdir(input_path) and (range_start_raw is not None or range_end_raw is not None):
         try:
             range_start = int(range_start_raw) if range_start_raw is not None else 1
@@ -329,6 +439,7 @@ def run_msst_batch_sync(req: TaskCreateRequest) -> TaskResultResponse:
         _finalize_task_output(task_output_dir, output_dir)
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)
+        _release_inference_slot()
 
 
 def list_models(model_class: str | None = None) -> List[ModelInfo]:
@@ -404,188 +515,213 @@ def run_msst_batch_sse(req: TaskCreateRequest):
     """
 
     storage = get_storage()
-    task_id = storage.create_task(status="running", message=None)
+    task_id = storage.create_task(status="queued", message=None)
 
-    try:
-        from webui.msst import run_inference as _run_inference
-        from webui.utils import get_msst_model, load_configs
-    except Exception as e:
-        raise RuntimeError("webui dependencies are not available") from e
+    def _gen():
+        proc: multiprocessing.Process | None = None
+        output_dir: str = ""
+        task_output_dir: str = ""
+        cleanup_dir: str | None = None
+        acquired: bool = False
 
-    input_path = os.path.abspath(req.input_path)
-    output_dir = os.path.abspath(req.output_dir)
-
-    path_err = _validate_host_path(req.input_path) or _validate_host_path(req.output_dir)
-    if path_err:
-        logger.error(path_err)
-        storage.update_task(task_id, status="failed", error=path_err)
-        yield _sse_event("error", {"task_id": task_id, "message": path_err})
-        return
-
-    if not os.path.exists(input_path):
-        msg = _i18n("输入路径不存在: ") + input_path
-        logger.error(msg)
-        storage.update_task(task_id, status="failed", error=msg)
-        yield _sse_event("error", {"task_id": task_id, "message": msg})
-        return
-
-    # alias to keep downstream code unchanged
-    run_inference = _run_inference
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    task_output_dir = os.path.join(output_dir, f"task_{task_id}")
-
-    range_start_raw = req.params.get("range_start")
-    range_end_raw = req.params.get("range_end")
-    input_path_for_infer = input_path
-    cleanup_dir: str | None = None
-    if os.path.isdir(input_path) and (range_start_raw is not None or range_end_raw is not None):
         try:
-            range_start = int(range_start_raw) if range_start_raw is not None else 1
-            range_end = int(range_end_raw) if range_end_raw is not None else 0
-        except Exception:
-            msg = _i18n("range_start/range_end 必须为整数")
+            from webui.msst import run_inference as _run_inference
+            from webui.utils import get_msst_model, load_configs
+        except Exception as e:
+            raise RuntimeError("webui dependencies are not available") from e
+
+        input_path = os.path.abspath(req.input_path)
+        output_dir = os.path.abspath(req.output_dir)
+
+        path_err = _validate_host_path(req.input_path) or _validate_host_path(req.output_dir)
+        if path_err:
+            logger.error(path_err)
+            storage.update_task(task_id, status="failed", error=path_err)
+            yield _sse_event("error", {"task_id": task_id, "message": path_err})
+            return
+
+        if not os.path.exists(input_path):
+            msg = _i18n("输入路径不存在: ") + input_path
             logger.error(msg)
             storage.update_task(task_id, status="failed", error=msg)
             yield _sse_event("error", {"task_id": task_id, "message": msg})
             return
 
-        if range_start < 1:
-            range_start = 1
+        cancel_event = get_cancel_event(task_id)
 
-        names = sorted(os.listdir(input_path))
-        # 过滤出音频/视频文件（文件场景）或保留子目录（项目/剧集场景），避免非媒体文件和NAS系统文件干扰 Range 索引
-        filtered_names = []
-        for name in names:
-            # 跳过以@或.开头的文件（NAS系统文件）
-            if name.startswith(('@', '.')):
-                continue
-            file_path = os.path.join(input_path, name)
-            if os.path.isdir(file_path):
-                filtered_names.append(name)
-                continue
-            if os.path.isfile(file_path):
-                # 检查文件扩展名是否为音频或视频格式
-                # librosa支持通过ffmpeg提取视频中的音频
-                if name.lower().endswith(
-                    (
-                        '.wav',
-                        '.mp3',
-                        '.flac',
-                        '.m4a',
-                        '.aac',
-                        '.ogg',
-                        '.mp4',
-                        '.avi',
-                        '.mkv',
-                        '.mov',
-                        '.wmv',
-                        '.flv',
-                        '.webm',
-                    )
-                ):
-                    filtered_names.append(name)
-        names = filtered_names
-        total = len(names)
-        if total == 0:
-            msg = _i18n("输入目录中没有找到音频文件: ") + input_path
-            logger.error(msg)
-            storage.update_task(task_id, status="failed", error=msg)
-            yield _sse_event("error", {"task_id": task_id, "message": msg})
-            return
+        yield _sse_event("queued", {"task_id": task_id, "status": "queued"})
 
-        if range_end_raw is None:
-            range_end = total
+        if not _acquire_inference_slot_or_wait(cancel_event=cancel_event, timeout_s=INFERENCE_QUEUE_TIMEOUT_S):
+            if cancel_event.is_set():
+                storage.update_task(task_id, status="canceled")
+                yield _sse_event("canceled", {"task_id": task_id, "status": "canceled", "files": []})
+                return
+            raise InferenceBusyError("inference capacity reached")
 
-        if range_end < range_start or range_start > total:
-            msg = _i18n("range_start/range_end 范围无效")
-            logger.error(msg)
-            storage.update_task(task_id, status="failed", error=msg)
-            yield _sse_event("error", {"task_id": task_id, "message": msg})
-            return
+        acquired = True
+        storage.update_task(task_id, status="running")
 
-        if range_end > total:
-            range_end = total
+        run_inference = _run_inference
 
-        if not (range_start == 1 and range_end == total):
+        os.makedirs(output_dir, exist_ok=True)
+        task_output_dir = os.path.join(output_dir, f"task_{task_id}")
+
+        range_start_raw = req.params.get("range_start")
+        range_end_raw = req.params.get("range_end")
+        input_path_for_infer = input_path
+
+        if os.path.isfile(input_path):
             import tempfile
-            tmp_base = os.path.join(tempfile.gettempdir(), f".msst_api_range_{task_id}")
+
+            tmp_base = os.path.join(tempfile.gettempdir(), f".msst_api_single_{task_id}")
             os.makedirs(tmp_base, exist_ok=True)
-            for idx in range(range_start - 1, range_end):
-                name = names[idx]
-                src = os.path.join(input_path, name)
-                dst = os.path.join(tmp_base, name)
-                try:
-                    if os.path.isdir(src):
-                        os.symlink(src, dst, target_is_directory=True)
-                    else:
-                        os.symlink(src, dst)
-                except Exception:
-                    if os.path.isdir(src):
-                        shutil.copytree(src, dst)
-                    else:
-                        shutil.copy2(src, dst)
+            src = input_path
+            dst = os.path.join(tmp_base, os.path.basename(src))
+            try:
+                os.symlink(src, dst)
+            except Exception:
+                shutil.copy2(src, dst)
             input_path_for_infer = tmp_base
             cleanup_dir = tmp_base
 
-    # 输出音轨优先使用顶级字段，兼容旧版 params["instrumental"]
-    extract_instrumental: List[str] = (req.extract_instrumental or req.params.get("instrumental") or [])
-    gpu_id = req.params.get("device_ids")
-    output_format = req.params.get("output_format") or "wav"
-    force_cpu = bool(req.params.get("force_cpu", False))
-    # 复用 WebUI 已保存的 use_tta 设置，忽略 API 传参
-    try:
-        _webui_cfg = load_configs(WEBUI_CONFIG)
-        use_tta = bool(_webui_cfg.get("inference", {}).get("use_tta", True))
-    except Exception:
-        use_tta = True
-
-    try:
-        # 构建推理所需参数（参考 webui.msst.start_inference）
-        if not req.model_name:
-            msg = _i18n("请选择模型")
-            storage.update_task(task_id, status="failed", error=msg)
-            yield _sse_event("error", {"task_id": task_id, "message": msg})
-            return
-
-        gpu_ids: List[int] = []
-        if not force_cpu:
-            # 默认不使用 CPU：缺省时自动选择 GPU0
-            if not gpu_id:
-                gpu_id = [0]
+        if os.path.isdir(input_path) and (range_start_raw is not None or range_end_raw is not None):
             try:
-                for gpu in gpu_id:
-                    gpu_ids.append(int(str(gpu).split(":", 1)[0].replace("cuda", "")))
+                range_start = int(range_start_raw) if range_start_raw is not None else 1
+                range_end = int(range_end_raw) if range_end_raw is not None else 0
             except Exception:
+                msg = _i18n("range_start/range_end 必须为整数")
+                logger.error(msg)
+                storage.update_task(task_id, status="failed", error=msg)
+                yield _sse_event("error", {"task_id": task_id, "message": msg})
+                return
+
+            if range_start < 1:
+                range_start = 1
+
+            names = sorted(os.listdir(input_path))
+            filtered_names = []
+            for name in names:
+                if name.startswith(('@', '.')):
+                    continue
+                file_path = os.path.join(input_path, name)
+                if os.path.isdir(file_path):
+                    filtered_names.append(name)
+                    continue
+                if os.path.isfile(file_path):
+                    if name.lower().endswith(
+                        (
+                            '.wav',
+                            '.mp3',
+                            '.flac',
+                            '.m4a',
+                            '.aac',
+                            '.ogg',
+                            '.mp4',
+                            '.avi',
+                            '.mkv',
+                            '.mov',
+                            '.wmv',
+                            '.flv',
+                            '.webm',
+                        )
+                    ):
+                        filtered_names.append(name)
+            names = filtered_names
+            total = len(names)
+            if total == 0:
+                msg = _i18n("输入目录中没有找到音频文件: ") + input_path
+                logger.error(msg)
+                storage.update_task(task_id, status="failed", error=msg)
+                yield _sse_event("error", {"task_id": task_id, "message": msg})
+                return
+
+            if range_end_raw is None:
+                range_end = total
+
+            if range_end < range_start or range_start > total:
+                msg = _i18n("range_start/range_end 范围无效")
+                logger.error(msg)
+                storage.update_task(task_id, status="failed", error=msg)
+                yield _sse_event("error", {"task_id": task_id, "message": msg})
+                return
+
+            if range_end > total:
+                range_end = total
+
+            if not (range_start == 1 and range_end == total):
+                import tempfile
+
+                tmp_base = os.path.join(tempfile.gettempdir(), f".msst_api_range_{task_id}")
+                os.makedirs(tmp_base, exist_ok=True)
+                for idx in range(range_start - 1, range_end):
+                    name = names[idx]
+                    src = os.path.join(input_path, name)
+                    dst = os.path.join(tmp_base, name)
+                    try:
+                        if os.path.isdir(src):
+                            os.symlink(src, dst, target_is_directory=True)
+                        else:
+                            os.symlink(src, dst)
+                    except Exception:
+                        if os.path.isdir(src):
+                            shutil.copytree(src, dst)
+                        else:
+                            shutil.copy2(src, dst)
+                input_path_for_infer = tmp_base
+                cleanup_dir = tmp_base
+
+        extract_instrumental: List[str] = (req.extract_instrumental or req.params.get("instrumental") or [])
+        gpu_id = req.params.get("device_ids")
+        output_format = req.params.get("output_format") or "wav"
+        force_cpu = bool(req.params.get("force_cpu", False))
+        try:
+            _webui_cfg = load_configs(WEBUI_CONFIG)
+            use_tta = bool(_webui_cfg.get("inference", {}).get("use_tta", True))
+        except Exception:
+            use_tta = True
+
+        try:
+            if not req.model_name:
+                msg = _i18n("请选择模型")
+                storage.update_task(task_id, status="failed", error=msg)
+                yield _sse_event("error", {"task_id": task_id, "message": msg})
+                return
+
+            gpu_ids: List[int] = []
+            if not force_cpu:
+                if not gpu_id:
+                    gpu_id = [0]
+                try:
+                    for gpu in gpu_id:
+                        gpu_ids.append(int(str(gpu).split(":", 1)[0].replace("cuda", "")))
+                except Exception:
+                    gpu_ids = [0]
+            else:
                 gpu_ids = [0]
-        else:
-            gpu_ids = [0]
 
-        gpu_ids = list(set(gpu_ids))
-        device = "auto" if not force_cpu else "cpu"
+            gpu_ids = list(set(gpu_ids))
+            device = "auto" if not force_cpu else "cpu"
 
-        model_path, config_path, model_type, _ = get_msst_model(req.model_name)
-        webui_config = load_configs(WEBUI_CONFIG)
-        debug = webui_config["settings"].get("debug", False)
-        wav_bit_depth = webui_config["settings"].get("wav_bit_depth", "FLOAT")
-        flac_bit_depth = webui_config["settings"].get("flac_bit_depth", "PCM_24")
-        mp3_bit_rate = webui_config["settings"].get("mp3_bit_rate", "320k")
+            model_path, config_path, model_type, _ = get_msst_model(req.model_name)
+            webui_config = load_configs(WEBUI_CONFIG)
+            debug = webui_config["settings"].get("debug", False)
+            wav_bit_depth = webui_config["settings"].get("wav_bit_depth", "FLOAT")
+            flac_bit_depth = webui_config["settings"].get("flac_bit_depth", "PCM_24")
+            mp3_bit_rate = webui_config["settings"].get("mp3_bit_rate", "320k")
 
-        os.makedirs(task_output_dir, exist_ok=True)
-        
-        store_dict = _build_store_dict(task_output_dir, extract_instrumental, config_path)
+            os.makedirs(task_output_dir, exist_ok=True)
+            store_dict = _build_store_dict(task_output_dir, extract_instrumental, config_path)
 
-        start_time = time.time()
-        logger.info("Starting MSST inference process (SSE mode)...")
+            start_time = time.time()
+            logger.info("Starting MSST inference process (SSE mode)...")
 
-        yield _sse_event("start", {"task_id": task_id, "status": "running"})
+            yield _sse_event("start", {"task_id": task_id, "status": "running"})
 
-        with multiprocessing.Manager() as manager:
-            callback = manager.dict()  # type: ignore[var-annotated]
-            callback["info"] = {"index": -1, "total": -1, "name": ""}
-            callback["progress"] = 0.0
-            callback["flag"] = (0, None)
+            q: multiprocessing.Queue = multiprocessing.Queue()
+            callback = _QueueCallback(q)
+            info: Dict[str, Any] = {"index": -1, "total": -1, "name": ""}
+            progress: float = 0.0
+            flag: Any = (0, None)
 
             proc = multiprocessing.Process(
                 target=run_inference,
@@ -621,25 +757,46 @@ def run_msst_batch_sse(req: TaskCreateRequest):
                 )
             )
 
+            def _drain_queue() -> None:
+                nonlocal info, progress, flag
+                while True:
+                    try:
+                        k, v = q.get_nowait()
+                    except Exception:
+                        break
+                    if k == "info":
+                        try:
+                            info = dict(v)
+                        except Exception:
+                            pass
+                    elif k == "progress":
+                        try:
+                            progress = float(v)
+                        except Exception:
+                            pass
+                    elif k == "flag":
+                        flag = v
+
             while proc.is_alive():
-                if get_cancel_event(task_id).is_set():
+                _drain_queue()
+
+                if cancel_event.is_set():
                     try:
                         if proc.pid:
-                            os.kill(int(proc.pid), signal.SIGTERM)
+                            _terminate_pid(int(proc.pid))
                     except ProcessLookupError:
                         pass
                     except Exception:
                         logger.exception(f"Failed to terminate SSE subprocess: task_id={task_id}, pid={proc.pid}")
                     break
-                flag = callback["flag"]
-                if flag[0]:
+
+                if isinstance(flag, tuple) and flag and flag[0]:
                     break
-                info = callback["info"]
-                progress = float(callback.get("progress", 0.0))
-                if info["index"] != -1:
-                    processed = info["index"]
-                    total = info["total"]
-                    current_file = info["name"]
+
+                if info.get("index", -1) != -1:
+                    processed = int(info.get("index") or 0)
+                    total = int(info.get("total") or 0)
+                    current_file = str(info.get("name") or "")
                     storage.update_task(
                         task_id,
                         progress=progress,
@@ -657,85 +814,114 @@ def run_msst_batch_sse(req: TaskCreateRequest):
                             "current_file": current_file,
                         },
                     )
+
                 time.sleep(0.1)
 
-            if get_cancel_event(task_id).is_set():
-                proc.join(timeout=2)
+            if cancel_event.is_set():
+                proc.join(timeout=3)
+                if proc.is_alive() and proc.pid:
+                    _terminate_pid(int(proc.pid))
+                    proc.join(timeout=3)
             else:
                 proc.join()
-            flag = callback["flag"]
 
-        if get_cancel_event(task_id).is_set():
-            stored = storage.get_task_result(task_id)
-            result = stored
-            if result is None or result.status != "canceled":
-                result = cancel_msst_sse_task(task_id)
-            if result is None:
-                storage.update_task(task_id, status="canceled")
-                yield _sse_event("canceled", {"task_id": task_id, "status": "canceled", "files": []})
+            _drain_queue()
+
+            if cancel_event.is_set():
+                stored = storage.get_task_result(task_id)
+                result = stored
+                if result is None or result.status != "canceled":
+                    result = cancel_msst_sse_task(task_id)
+                if result is None:
+                    storage.update_task(task_id, status="canceled")
+                    yield _sse_event("canceled", {"task_id": task_id, "status": "canceled", "files": []})
+                    return
+
+                files_payload = [
+                    (f.model_dump() if hasattr(f, "model_dump") else f.dict())  # type: ignore[attr-defined]
+                    for f in result.files
+                ]
+                yield _sse_event(
+                    "canceled",
+                    {"task_id": task_id, "status": "canceled", "files": files_payload},
+                )
                 return
 
-            files_payload = [
-                (f.model_dump() if hasattr(f, "model_dump") else f.dict())  # type: ignore[attr-defined]
-                for f in result.files
-            ]
-            yield _sse_event(
-                "canceled",
-                {"task_id": task_id, "status": "canceled", "files": files_payload},
-            )
-            return
+            if flag[0] == 1:
+                duration = round(time.time() - start_time, 2)
+                storage.update_task(task_id, status="success", progress=1.0)
 
-        if flag[0] == 1:
-            duration = round(time.time() - start_time, 2)
-            storage.update_task(task_id, status="success", progress=1.0)
-            
-            files: List[FileResult] = []
-            try:
-                files = collect_task_output_files(task_output_dir)
-                logger.info(f"Collected {len(files)} file results from {task_output_dir}")
-                storage.save_results(task_id, files)
-            except Exception as e:
-                logger.warning(f"Failed to collect output files: {e}")
+                files: List[FileResult] = []
+                try:
+                    files = collect_task_output_files(task_output_dir)
+                    logger.info(f"Collected {len(files)} file results from {task_output_dir}")
+                    storage.save_results(task_id, files)
+                except Exception as e:
+                    logger.warning(f"Failed to collect output files: {e}")
 
-            _finalize_task_output(task_output_dir, output_dir)
-            
-            files_payload = [
-                (f.model_dump() if hasattr(f, "model_dump") else f.dict())  # type: ignore[attr-defined]
-                for f in files
-            ]
-            yield _sse_event(
-                "completed",
-                {"task_id": task_id, "status": "success", "duration": duration, "files": files_payload},
-            )
-            unregister_task_runtime(task_id)
-        elif flag[0] == -1:
-            err_msg = str(flag[1])
+                _finalize_task_output(task_output_dir, output_dir)
+
+                files_payload = [
+                    (f.model_dump() if hasattr(f, "model_dump") else f.dict())  # type: ignore[attr-defined]
+                    for f in files
+                ]
+                yield _sse_event(
+                    "completed",
+                    {"task_id": task_id, "status": "success", "duration": duration, "files": files_payload},
+                )
+                unregister_task_runtime(task_id)
+            elif flag[0] == -1:
+                err_msg = str(flag[1])
+                storage.update_task(task_id, status="failed", error=err_msg)
+                _finalize_task_output(task_output_dir, output_dir)
+                yield _sse_event(
+                    "error",
+                    {"task_id": task_id, "status": "failed", "message": err_msg},
+                )
+                unregister_task_runtime(task_id)
+            else:
+                msg = "MSST inference process exited unexpectedly"
+                storage.update_task(task_id, status="failed", error=msg)
+                _finalize_task_output(task_output_dir, output_dir)
+                yield _sse_event(
+                    "error",
+                    {"task_id": task_id, "status": "failed", "message": msg},
+                )
+                unregister_task_runtime(task_id)
+        except Exception as e:  # pragma: no cover
+            err_msg = f"MSST batch inference (SSE) failed: {e}"
+            logger.exception(err_msg)
             storage.update_task(task_id, status="failed", error=err_msg)
-            _finalize_task_output(task_output_dir, output_dir)
+            try:
+                _finalize_task_output(task_output_dir, output_dir)
+            except Exception:
+                logger.exception(f"Failed to finalize output dir after SSE error: task_id={task_id}")
             yield _sse_event(
                 "error",
                 {"task_id": task_id, "status": "failed", "message": err_msg},
             )
+        finally:
+            try:
+                if proc is not None and proc.is_alive():
+                    try:
+                        if proc.pid:
+                            _terminate_pid(int(proc.pid))
+                    finally:
+                        proc.join(timeout=3)
+            except Exception:
+                logger.exception(f"Failed during SSE finalization: task_id={task_id}")
+
             unregister_task_runtime(task_id)
-        else:
-            msg = "MSST inference process exited unexpectedly"
-            storage.update_task(task_id, status="failed", error=msg)
-            _finalize_task_output(task_output_dir, output_dir)
-            yield _sse_event(
-                "error",
-                {"task_id": task_id, "status": "failed", "message": msg},
-            )
-            unregister_task_runtime(task_id)
-    except Exception as e:  # pragma: no cover - 防御性分支
-        err_msg = f"MSST batch inference (SSE) failed: {e}"
-        logger.exception(err_msg)
-        storage.update_task(task_id, status="failed", error=err_msg)
-        _finalize_task_output(task_output_dir, output_dir)
-        yield _sse_event(
-            "error",
-            {"task_id": task_id, "status": "failed", "message": err_msg},
-        )
-    finally:
-        unregister_task_runtime(task_id)
-        if cleanup_dir:
-            shutil.rmtree(cleanup_dir, ignore_errors=True)
+            if cleanup_dir:
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+            if task_output_dir and output_dir:
+                try:
+                    _finalize_task_output(task_output_dir, output_dir)
+                except Exception:
+                    logger.exception(f"Failed to finalize output dir in SSE finally: task_id={task_id}")
+
+            if acquired:
+                _release_inference_slot()
+
+    return _gen()

@@ -4,7 +4,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from api.models import ErrorResponse, ModelListResponse, TaskCreateRequest, TaskCreateResponse, TaskResultResponse, TaskStatusResponse
-from api.services import cancel_msst_sse_task, list_models, run_msst_batch_sse, run_msst_batch_sync
+from api.services import InferenceBusyError, cancel_msst_sse_task, list_models, run_msst_batch_sse, run_msst_batch_sync
 from api.storage import get_storage
 
 
@@ -21,11 +21,14 @@ async def create_msst_batch_task(
     当前默认模式为 sync（blocking JSON）：请求会一直阻塞直到任务完成，再返回最终状态。
     当 mode=sse 时，返回标准 SSE 事件流，渐进式推送任务进度。
     """
-    if mode == "sse":
-        return StreamingResponse(run_msst_batch_sse(req), media_type="text/event-stream")
+    try:
+        if mode == "sse":
+            return StreamingResponse(run_msst_batch_sse(req), media_type="text/event-stream")
 
-    result: TaskResultResponse = run_msst_batch_sync(req)
-    return TaskCreateResponse(task_id=result.task_id, status=result.status, message=None)
+        result: TaskResultResponse = run_msst_batch_sync(req)
+        return TaskCreateResponse(task_id=result.task_id, status=result.status, message=None)
+    except InferenceBusyError as e:
+        raise HTTPException(status_code=429, detail=ErrorResponse(error_message=str(e)).dict())
 
 
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse, responses={404: {"model": ErrorResponse}})
