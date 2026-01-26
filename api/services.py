@@ -110,6 +110,7 @@ def _terminate_pid(pid: int, *, term_timeout_s: float = 10.0) -> None:
 
 
 def _acquire_inference_slot_or_wait(*, cancel_event: threading.Event | None = None, timeout_s: float = INFERENCE_QUEUE_TIMEOUT_S) -> bool:
+    global _semaphore_count
     deadline = time.time() + float(timeout_s)
     while True:
         if cancel_event is not None and cancel_event.is_set():
