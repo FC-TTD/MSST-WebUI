@@ -126,6 +126,9 @@ def _acquire_inference_slot_or_wait(*, cancel_event: threading.Event | None = No
             ok = bool(inference_semaphore.acquire(True, step))
 
         if ok:
+            # 维护信号量计数器，防止泄漏
+            with _semaphore_lock:
+                _semaphore_count += 1
             return True
 
 
