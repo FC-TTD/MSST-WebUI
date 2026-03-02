@@ -22,6 +22,7 @@ services:
       - LANGUAGE=zh_CN.UTF-8
       - LC_ALL=zh_CN.UTF-8
       - TZ=Asia/Shanghai
+      - OPENBLAS_NUM_THREADS=1
     deploy:
       resources:
         reservations:
