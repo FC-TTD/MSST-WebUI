@@ -38,6 +38,8 @@ transformers~=4.35.0
 tqdm
 pydantic<2.11
 sageattention==1.0.6
+neuraloperator>=2.0.0
+safetensors>=0.7.0
 
 # New dependencies for HyperACE and safetensors support
 neuraloperator>=2.0.0
