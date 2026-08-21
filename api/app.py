@@ -4,7 +4,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from api.models import ErrorResponse, ModelListResponse, TaskCreateRequest, TaskCreateResponse, TaskResultResponse, TaskStatusResponse
-from api.services import InferenceBusyError, cancel_msst_sse_task, list_models, run_msst_batch_sse, run_msst_batch_sync
+from api.services import InferenceBusyError, cancel_msst_sse_task, list_models, run_msst_batch_sse, run_msst_batch_sync, start_msst_batch_async
 from api.storage import get_storage
 
 
@@ -14,14 +14,17 @@ router = APIRouter(prefix="/api/v1", tags=["msst"])
 @router.post("/tasks/msst-batch", response_model=TaskCreateResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
 async def create_msst_batch_task(
     req: TaskCreateRequest,
-    mode: str = Query("sync", pattern="^(sync|sse)$", description="返回模式：sync=同步JSON，sse=事件流(SSE)"),
+    mode: str = Query("sync", pattern="^(sync|sse|async)$", description="返回模式：sync=同步JSON，sse=事件流，async=立即返回 task ID 后轮询"),
 ) -> TaskCreateResponse | StreamingResponse:
-    """同步执行一次批量 MSST 分离任务。
+    """创建一次批量 MSST 分离任务。
 
     当前默认模式为 sync（blocking JSON）：请求会一直阻塞直到任务完成，再返回最终状态。
     当 mode=sse 时，返回标准 SSE 事件流，渐进式推送任务进度。
+    当 mode=async 时，立即返回 task ID，调用方通过任务查询接口轮询状态和结果。
     """
     try:
+        if mode == "async":
+            return start_msst_batch_async(req)
         if mode == "sse":
             return StreamingResponse(run_msst_batch_sse(req), media_type="text/event-stream")
 

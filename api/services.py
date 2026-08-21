@@ -11,7 +11,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from api.models import FileResult, ModelInfo, TaskCreateRequest, TaskResultResponse
+from api.models import FileResult, ModelInfo, TaskCreateRequest, TaskCreateResponse, TaskResultResponse
 from api.storage import get_storage
 from api.task_results import collect_task_output_files
 from api.task_runtime import TaskRuntime, get_cancel_event, get_task_lock, get_task_runtime, register_task_runtime, unregister_task_runtime
@@ -195,7 +195,6 @@ def cancel_msst_sse_task(task_id: str) -> TaskResultResponse | None:
         cancel_event = get_cancel_event(task_id)
         cancel_event.set()
         storage.update_task(task_id, status="canceled")
-        unregister_task_runtime(task_id)
         return TaskResultResponse(task_id=task_id, status="canceled", files=[])
 
     lock = get_task_lock(task_id)
@@ -536,7 +535,7 @@ def _sse_event(event: str, data: Dict) -> str:
     return f"event: {event}\n" f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def run_msst_batch_sse(req: TaskCreateRequest):
+def run_msst_batch_sse(req: TaskCreateRequest, existing_task_id: str | None = None):
     """以 SSE 事件流的方式执行一次批量 MSST 分离。
 
     - 使用 multiprocessing + webui.msst.run_inference 复用现有推理逻辑；
@@ -545,7 +544,7 @@ def run_msst_batch_sse(req: TaskCreateRequest):
     """
 
     storage = get_storage()
-    task_id = storage.create_task(status="queued", message=None)
+    task_id = existing_task_id or storage.create_task(status="queued", message=None)
 
     def _gen():
         proc: multiprocessing.Process | None = None
@@ -972,3 +971,21 @@ def run_msst_batch_sse(req: TaskCreateRequest):
                 _release_inference_slot()
 
     return _gen()
+
+
+def start_msst_batch_async(req: TaskCreateRequest) -> TaskCreateResponse:
+    """Start the existing SSE lifecycle in a background thread and return its stable task ID."""
+
+    storage = get_storage()
+    task_id = storage.create_task(status="queued", message=None)
+
+    def _run() -> None:
+        try:
+            for _event in run_msst_batch_sse(req, existing_task_id=task_id):
+                pass
+        except Exception as error:  # pragma: no cover - last-resort task state guard
+            logger.exception("MSST async task failed before lifecycle finalization: task_id=%s", task_id)
+            storage.update_task(task_id, status="failed", error=str(error))
+
+    threading.Thread(target=_run, name=f"msst_async_{task_id}", daemon=True).start()
+    return TaskCreateResponse(task_id=task_id, status="queued", message=None)

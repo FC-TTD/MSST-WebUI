@@ -75,4 +75,3 @@ class ModelInfo(BaseModel):
 
 class ModelListResponse(BaseModel):
     models: List[ModelInfo] = Field(default_factory=list)
-
