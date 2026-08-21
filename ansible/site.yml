@@ -32,6 +32,29 @@
       delegate_to: ttd-edge
       tags: [cd]
 
+    - name: Pull the resolved MSST image
+      ansible.builtin.command:
+        cmd: "docker pull {{ ci_hash_image_name }}"
+      register: msst_pull
+      changed_when: "'Downloaded' in msst_pull.stdout or 'Pulled' in msst_pull.stdout"
+      delegate_to: ttd-edge
+      tags: [cd]
+
+    - name: Verify the packaged MSST API imports before rollout
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --entrypoint
+          - python
+          - "{{ ci_hash_image_name }}"
+          - -c
+          - import api.app; import docker.entry
+      changed_when: false
+      delegate_to: ttd-edge
+      tags: [cd]
+
     - name: Install the resolved formal Compose definition
       ansible.builtin.copy:
         content: "{{ ci_compose_content }}"
@@ -46,14 +69,6 @@
       ansible.builtin.command:
         cmd: docker compose -f /opt/msst-webui/compose.yaml config --quiet
       changed_when: false
-      delegate_to: ttd-edge
-      tags: [cd]
-
-    - name: Pull the resolved MSST image
-      ansible.builtin.command:
-        cmd: docker compose -f /opt/msst-webui/compose.yaml pull msst
-      register: msst_pull
-      changed_when: "'Downloaded' in msst_pull.stdout or 'Pulled' in msst_pull.stdout"
       delegate_to: ttd-edge
       tags: [cd]
 

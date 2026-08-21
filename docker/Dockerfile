@@ -20,6 +20,7 @@ RUN  --mount=type=bind,target=/tmp/requirements.txt,source=requirements.txt \
 RUN pip install "ttd_fastapi_utils>=0.2.4" --index-url http://pypi-server/simple --trusted-host pypi-server
 
 COPY . /app
+COPY docker/entry.py /app/entry.py
 
 EXPOSE 7860
 
@@ -30,4 +31,4 @@ ENV GRADIO_SHARE=False
 HEALTHCHECK --interval=30s --timeout=3s --start-interval=1m --retries=3 \
     CMD curl -f http://localhost:7860/health || exit 1
 
-CMD ["python", "docker/entry.py"]
+CMD ["python", "entry.py"]
