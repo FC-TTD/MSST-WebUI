@@ -11,6 +11,9 @@ RUN  pip install torch torchvision torchaudio --index-url https://download.pytor
 
 WORKDIR /app
 
+RUN python -m venv --system-site-packages /opt/msst-venv
+ENV PATH="/opt/msst-venv/bin:${PATH}"
+
 RUN  --mount=type=bind,target=/tmp/requirements.txt,source=requirements.txt \
     pip install --no-cache-dir -r /tmp/requirements.txt --only-binary=samplerate
 
