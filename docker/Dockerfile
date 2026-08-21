@@ -22,9 +22,8 @@ EXPOSE 7860
 
 ENV GRADIO_SERVER_NAME=0.0.0.0
 ENV GRADIO_SHARE=False
-ENV TTD_WEBHOOK_URL="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=4e5f3845-cd5f-43a0-b004-231e710c68e4"
 
-# Health check for webhook integration
+# Service health check
 HEALTHCHECK --interval=30s --timeout=3s --start-interval=1m --retries=3 \
     CMD curl -f http://localhost:7860/health || exit 1
 

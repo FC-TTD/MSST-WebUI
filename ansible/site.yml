@@ -1,0 +1,84 @@
+- name: Build and deploy MSST-WebUI with an immutable image
+  hosts: localhost
+  gather_facts: true
+  roles:
+    - role: docker_ci_cd
+      vars:
+        ci_project_name: msst-webui
+        ci_project_path: "{{ playbook_dir }}/.."
+        ci_dockerfile_path: docker/Dockerfile
+        ci_image_name: msst
+        ci_compose_file_path: "{{ playbook_dir }}/../docker/compose.formal.yml"
+        ci_build_host: ttd-nest
+        ci_registry_url: registry.ttd
+        ci_publish_label_tag: false
+        pt_skip_cd: true
+      tags: [sync, ci, cd]
+
+  post_tasks:
+    - name: Require an immutable content-addressed image
+      ansible.builtin.assert:
+        that:
+          - ci_hash_image_name is defined
+          - ci_hash_image_name is match('^.+:h-[0-9a-f]+$')
+        fail_msg: "Refusing formal MSST deployment without an h-* image tag."
+      tags: [cd]
+
+    - name: Ensure the formal project directory exists
+      ansible.builtin.file:
+        path: /opt/msst-webui
+        state: directory
+        mode: "0755"
+      delegate_to: ttd-edge
+      tags: [cd]
+
+    - name: Install the resolved formal Compose definition
+      ansible.builtin.copy:
+        content: "{{ ci_compose_content }}"
+        dest: /opt/msst-webui/compose.yaml
+        mode: "0644"
+        backup: true
+      register: msst_compose_copy
+      delegate_to: ttd-edge
+      tags: [cd]
+
+    - name: Validate the resolved formal Compose definition
+      ansible.builtin.command:
+        cmd: docker compose -f /opt/msst-webui/compose.yaml config --quiet
+      changed_when: false
+      delegate_to: ttd-edge
+      tags: [cd]
+
+    - name: Pull the resolved MSST image
+      ansible.builtin.command:
+        cmd: docker compose -f /opt/msst-webui/compose.yaml pull msst
+      register: msst_pull
+      changed_when: "'Downloaded' in msst_pull.stdout or 'Pulled' in msst_pull.stdout"
+      delegate_to: ttd-edge
+      tags: [cd]
+
+    - name: Apply the formal MSST Compose project
+      ansible.builtin.command:
+        cmd: docker compose -f /opt/msst-webui/compose.yaml up -d --no-build --remove-orphans
+      register: msst_compose_up
+      changed_when: true
+      delegate_to: ttd-edge
+      tags: [cd]
+
+    - name: Wait for the MSST container to become healthy
+      ansible.builtin.command:
+        cmd: docker inspect msst --format={{ '{{' }}.State.Health.Status{{ '}}' }}
+      register: msst_health
+      changed_when: false
+      retries: 30
+      delay: 5
+      until: msst_health.stdout == 'healthy'
+      delegate_to: ttd-edge
+      tags: [cd]
+
+    - name: Show the rollback Compose backup
+      ansible.builtin.debug:
+        msg: >-
+          Previous Compose backup:
+          {{ msst_compose_copy.backup_file | default('unchanged; use the recorded prior image') }}
+      tags: [cd]

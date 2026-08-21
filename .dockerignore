@@ -1,0 +1,15 @@
+.git
+.github
+.pytest_cache
+.venv
+**/__pycache__
+**/*.py[cod]
+api/tests
+data
+docs
+node_modules
+pretrain
+runtime
+results
+outputs
+logs
