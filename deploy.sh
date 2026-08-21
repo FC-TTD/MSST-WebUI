@@ -7,13 +7,13 @@ usage() {
 
 case "${1:-}" in
   verify)
-    ansible-playbook -i 'ttd-edge,' ansible/site.yml --syntax-check
+    ansible-playbook -i ansible/inventory.yml ansible/site.yml --syntax-check
     ;;
   build)
-    ansible-playbook -i 'ttd-edge,' ansible/site.yml --tags sync,ci
+    ansible-playbook -i ansible/inventory.yml ansible/site.yml --tags sync,ci
     ;;
   formal)
-    ansible-playbook -i 'ttd-edge,' ansible/site.yml --tags sync,ci,cd
+    ansible-playbook -i ansible/inventory.yml ansible/site.yml --tags sync,ci,cd
     ;;
   *)
     usage

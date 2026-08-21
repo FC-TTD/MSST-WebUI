@@ -1,0 +1,10 @@
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
+    ttd-edge:
+      ansible_host: ttd-edge
+      ansible_user: root
+    ttd-nest:
+      ansible_host: ttd-nest
+      ansible_user: root
