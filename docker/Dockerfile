@@ -30,4 +30,4 @@ ENV GRADIO_SHARE=False
 HEALTHCHECK --interval=30s --timeout=3s --start-interval=1m --retries=3 \
     CMD curl -f http://localhost:7860/health || exit 1
 
-CMD ["python", "entry.py"]
+CMD ["python", "docker/entry.py"]
