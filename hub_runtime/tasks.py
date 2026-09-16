@@ -188,9 +188,9 @@ class Tasks:
 
     def _record_error(self, task_id, exc):
         if getattr(exc, 'code', None) == 'execution_unknown':
-            self.storage.update_task(task_id, error='execution_unknown')
+            self.storage.update_task(task_id, status='running', error='execution_unknown')
         elif self._status(task_id) not in ('failed', 'canceled', 'success'):
-            self.storage.update_task(task_id, status='failed', error=type(exc).__name__)
+            self.storage.update_task(task_id, status='failed', error=getattr(exc, 'code', type(exc).__name__))
 
     def start(self, req):
         from api.models import TaskCreateResponse
