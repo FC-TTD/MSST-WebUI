@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 import logging
 import queue
 import threading
+from ttd_model_runtime import NativeCancelled
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,8 @@ class OwnedStream:
             for event in iterator:
                 if not self._put('event', event):
                     break
+        except NativeCancelled:
+            pass  # Native canceled event/result is preserved; no stream error.
         except BaseException as exc:
             failure = exc
             self.tasks._record_error(self.owner.task_id, exc)
@@ -167,7 +170,7 @@ class Tasks:
                     owner.engine = engine
                 if owner.cancel.is_set():
                     self.storage.update_task(owner.task_id, status='canceled')
-                    return
+                    raise NativeCancelled()
                 iterator = engine.run_sse(plain(req), owner.task_id)
                 try:
                     yield from iterator
@@ -177,6 +180,8 @@ class Tasks:
                 # Preserve API task state while reporting a failed GPU activity.
                 if self._status(owner.task_id) == 'failed':
                     raise RuntimeError('native MSST task failed')
+                if self._status(owner.task_id) == 'canceled':
+                    raise NativeCancelled()
         finally:
             self._remove(owner)
 
@@ -203,6 +208,8 @@ class Tasks:
             try:
                 for _ in self._stream(req, owner):
                     pass
+            except NativeCancelled:
+                pass
             except BaseException as exc:
                 # SDK completion is authoritative for unknown execution. Do not
                 # turn it into a false successful/canceled native task result.
@@ -226,8 +233,12 @@ class Tasks:
                 result = self.runtime.get().run_sync(plain(req))
                 if result.get('status') == 'failed':
                     raise NativeTaskFailed(result)
+                if result.get('status') == 'canceled':
+                    raise NativeCancelled()
         except NativeTaskFailed as exc:
             result = exc.result
+        except NativeCancelled:
+            pass
         return TaskResultResponse(**result)
 
     def cancel_task(self, task_id):

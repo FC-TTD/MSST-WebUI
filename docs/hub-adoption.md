@@ -35,6 +35,10 @@ Cancellation reaches the active engine's native task/PID registry, without a new
 load or activity. Cleanup must finish before an interrupted native task becomes
 canceled; unknown execution retains uncertainty. Native failed sync results stay
 failed in the pool while retaining the original API response shape.
+Confirmed native cancellation is reported through `NativeCancelled`, producing
+the existing Hub `cancelled` outcome rather than a false success. The adapter
+catches the marker outside the execution scope and preserves native `canceled`
+API/SSE results. This adds no pool cancellation command or platform UI control.
 
 UI coverage includes MSST, VR, preset, ensemble, SOME, training and validation.
 Training returns its original startup message but a background activity keeps
@@ -84,6 +88,10 @@ attempt remains a failed UI delivery, not an unexecuted request or acceptance.
 The fix treats progress as a callable (`is not None` in SDK, explicit forwarding
 lambda in the model UI bridge). Replacement uses a fresh actor after confirmed
 drain/retirement; no in-place package patch or revival of the old actor.
+The following candidate passed real UI delivery; its cancellation regression
+exposed the missing outcome mapping above. That historical test record is retained.
+Managed image health probes use port8000, matching the new HTTP host rather than
+the base image's retired port7860.
 
 ## Native GPU evidence collected before handoff
 

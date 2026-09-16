@@ -14,4 +14,5 @@ COPY hub_runtime /app/hub_runtime
 ENV TTD_WEBHOOK_URL="" GRADIO_ANALYTICS_ENABLED="False"
 LABEL org.opencontainers.image.source="https://github.com/FC-TTD/MSST-WebUI" org.opencontainers.image.revision="${SOURCE_REV}"
 RUN python -m hub_runtime describe > /app/hub_runtime/contract.json
+HEALTHCHECK --interval=30s --timeout=3s --start-period=120s --retries=3 CMD curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1
 CMD ["python", "-m", "hub_runtime"]

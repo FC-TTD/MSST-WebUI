@@ -104,5 +104,27 @@ class TasksTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):list(tasks.run_sse(Request()))
         self.assertEqual(states,['failed'])
 
+    def test_native_cancel_result_is_not_counted_as_success(self):
+        from ttd_model_runtime import NativeCancelled
+        storage=Storage(); states=[]
+        class Engine:
+            def run_sse(self, req, task_id):
+                storage.update_task(task_id,status='canceled')
+                yield 'event: canceled\n\n'
+        class Runtime:
+            @contextmanager
+            def execution(self):
+                try:yield
+                except NativeCancelled:
+                    states.append('cancelled');raise
+                else:states.append('succeeded')
+            def get(self):return Engine()
+        tasks=Tasks(Runtime(),storage)
+        stream=tasks.run_sse(Request())
+        self.assertEqual(list(stream),['event: canceled\n\n'])
+        stream.thread.join(3)
+        self.assertEqual(states,['cancelled'])
+        self.assertEqual(storage.rows[stream.owner.task_id].status,'canceled')
+
 
 if __name__=='__main__':unittest.main()
