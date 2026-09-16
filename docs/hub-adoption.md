@@ -1,7 +1,8 @@
 # MSST managed adoption
 
-Preparation on the `hub` branch; not yet a completed production handoff.
-Native source: `41d03345d63f61d9605a68997cf4312e3c7b8718`. Existing image:
+Formal worker handoff completed on 2026-09-16; the original `http://msst`
+domain and existing Gateway model now reach the managed service. Native source:
+`41d03345d63f61d9605a68997cf4312e3c7b8718`. Existing image:
 `registry.ttd/msst-webui/msst@sha256:b1113e1b2273806a7246b066f95e6b275e60d338f371883b9430b60aadc88470`.
 Original CPU/GPU split, PyTorch2.7.1+cu128, Gradio4.38.1, FastAPI0.111.0,
 Pydantic2.10.6 and CPython3.11.13 are preserved. No upstream algorithm files change.
@@ -110,3 +111,29 @@ Native evidence remains edge `/TTD-Data/msst/data/hub-adoption-baseline-20260916
 and `hub-adoption-profiles-20260916/`. Actual managed API/UI, asynchronous cancellation,
 NVML process attribution, unload/reload, original-domain handoff and Gateway task
 ownership/Range download/usage are still required before declaring adoption done.
+
+## Completed managed acceptance
+
+The above gates have now run against actor `msst-adopt-434e4ae75cbf` on worker.
+Final model image is `registry.ttd/msst/hub@sha256:6c89a4c36ce1520afc88ebb6ff8cb0874425fd05157ba62f5f7fc487b1518331`,
+SDK `registry.ttd/ttd-hub/runtime@sha256:8e6f9ef666d6c928e47b0c8c66a31ea3e83647debbe84a5ba7aaeb1aa8cd360b`.
+The ingress-only correction is source `0d71a00` (`MSST_RELEASE` in business
+overlay); deployed as `business-corrected.yml` without changing the model image.
+
+Native asynchronous API double submissions, original UI upload/generation/audio
+preview, confirmed cancellation with matching Runtime/Hub `cancelled`, empty
+engine group on drain, later successful reload, all nine Gateway checkpoint
+profiles, and post-cutover original-domain inference passed. Gateway one-submit
+task polling/result and authenticated Range download passed with one persisted
+internal success usage record. Original six managed models each passed two
+Gateway calls after this cutover. Native heavyweight profile combinations and
+all training datasets/UI checkpoints are not claimed exhaustively verified.
+
+Release/checkpoints/audio: `/opt/ttd-hub-v2/adoptions/msst-adopt-434e4ae75cbf/` on
+worker and edge; source-controlled cross-system report is Hub
+`docs/proposals/model-compute-pool/msst-online-2026-09-16.md`. Initial budget17GiB
+is persistent policy; measured default double peak9704MiB and Apollo single12004MiB.
+The old edge container exited normally only after ingress closure plus repeated
+task/queue/native-process/NVML idle checks. Existing DB, outputs and histories
+were preserved. Pool-pressure eviction may leave a healthy MSST unloaded; it
+reloads through normal admission, without requiring all seven models resident.
