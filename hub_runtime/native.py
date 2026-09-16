@@ -127,7 +127,8 @@ class _Gradio:
 
     def Progress(self, *args, **kwargs):
         from ttd_model_runtime.engine import engine_progress
-        return engine_progress() or self.original.Progress(*args, **kwargs)
+        callback = engine_progress()
+        return callback if callback is not None else self.original.Progress(*args, **kwargs)
 
 
 def _plain(value):

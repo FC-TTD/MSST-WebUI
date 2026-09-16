@@ -15,6 +15,12 @@ def load_model():
 
 def completion(model):
     model.completion()
+    # SOME runs CUDA in this supervisor rather than a per-task subprocess.
+    # Synchronize an already initialized context; do not create one for the
+    # usual child-process-only separation path.
+    torch = sys.modules.get('torch')
+    if torch is not None and torch.cuda.is_initialized():
+        torch.cuda.synchronize()
 
 
 def release(model):

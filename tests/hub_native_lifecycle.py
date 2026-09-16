@@ -223,3 +223,16 @@ def test_sdk_finish_persists_unknown_even_if_native_call_raised_ordinary_error()
         assert runtime._status["residency"] == "unknown"
     finally:
         runtime._db.close()
+
+
+@pytest.mark.parametrize('initialized', [False, True])
+def test_completion_synchronizes_only_existing_supervisor_cuda_context(monkeypatch, initialized):
+    import sys
+    from types import SimpleNamespace
+    from hub_runtime.adapter import completion
+    calls = []
+    monkeypatch.setitem(sys.modules, 'torch', SimpleNamespace(cuda=SimpleNamespace(
+        is_initialized=lambda:initialized,
+        synchronize=lambda:calls.append('cuda-complete'))))
+    completion(SimpleNamespace(completion=lambda:calls.append('native-complete')))
+    assert calls == ['native-complete'] + (['cuda-complete'] if initialized else [])

@@ -257,7 +257,10 @@ class Tasks:
             with self.runtime.execution():
                 with self._guard:
                     owner.engine = self.runtime.get()
-                with progress_scope(gr.Progress()):
+                progress = gr.Progress()
+                # Treat the progress object as callable, never as a collection;
+                # Gradio 4's __len__ assumes an active tqdm iterable.
+                with progress_scope(lambda *values, **options: progress(*values, **options)):
                     return owner.engine.run_ui(entry, list(args))
         finally:
             self._remove(owner)

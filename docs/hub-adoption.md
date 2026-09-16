@@ -77,6 +77,14 @@ The CPU-only image check constructed the full copied UI (569 components,
 121 dependencies), matched API schema and assembled the SDK app with CUDA hidden.
 This is not GPU deployment acceptance.
 
+The first managed async API single/double workloads passed. The first real UI
+attempt failed in the SDK while testing the truth value of a Gradio4 Progress
+object; native inference had already started and later produced files. That
+attempt remains a failed UI delivery, not an unexecuted request or acceptance.
+The fix treats progress as a callable (`is not None` in SDK, explicit forwarding
+lambda in the model UI bridge). Replacement uses a fresh actor after confirmed
+drain/retirement; no in-place package patch or revival of the old actor.
+
 ## Native GPU evidence collected before handoff
 
 2026-09-16, original edge service, 20.143s input. Default vocals model single task
