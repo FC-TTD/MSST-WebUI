@@ -39,6 +39,9 @@ failed in the pool while retaining the original API response shape.
 UI coverage includes MSST, VR, preset, ensemble, SOME, training and validation.
 Training returns its original startup message but a background activity keeps
 consuming the engine stream until the actual child/grandchild execution ends.
+MSST explicitly sets the SDK's business execution timeout to `None`, preserving
+native long-running training/folder calls; startup, completion, stream close and
+shutdown controls remain bounded. Transport failure still preserves uncertainty.
 UI GPU selection represents lease-local cuda:0; ordinal/numeric-string/current
 UUID validation rejects other GPUs instead of native parsers silently falling
 back. Existing CPU/GPU precision and CPU modes are not rewritten.

@@ -31,7 +31,8 @@ def create_app(runtime=None):
     from ttd_model_runtime import Runtime
     from ttd_model_runtime.integrations.fastapi import attach
     from .ui import build_ui
-    runtime = runtime or Runtime(load_model, completion=completion, release=release, cleanup=cleanup)
+    runtime = runtime or Runtime(load_model, completion=completion, release=release,
+                                 cleanup=cleanup, execution_timeout=None)
     app = build_api(runtime)
     app.add_middleware(NativeUIRoutes)
     return attach(app, runtime=runtime, ui_factory=lambda:build_ui(runtime, app.state.hub_tasks), ui_path=UI_PATH)
