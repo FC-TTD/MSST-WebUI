@@ -1,7 +1,7 @@
 services:
   entry:
     labels: !override
-      ttd.hub.release: ${VOXCPM_RELEASE:?}
+      ttd.hub.release: ${MSST_RELEASE:?}
       caddy_ingress_network: caddy
       caddy: http://msst
       caddy.reverse_proxy: '{{upstreams 8080}}'
