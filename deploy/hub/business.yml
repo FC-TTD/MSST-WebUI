@@ -1,0 +1,11 @@
+services:
+  entry:
+    labels: !override
+      ttd.hub.release: ${VOXCPM_RELEASE:?}
+      caddy_ingress_network: caddy
+      caddy: http://msst
+      caddy.reverse_proxy: '{{upstreams 8080}}'
+      caddy.reverse_proxy.health_uri: /hub-entry/health
+      caddy.reverse_proxy.health_interval: 10s
+      caddy.reverse_proxy.health_timeout: 3s
+      caddy.reverse_proxy.health_status: '200'

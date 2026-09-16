@@ -1,0 +1,68 @@
+name: msst-hub
+services:
+  runtime:
+    image: ${MSST_IMAGE:?fixed VoxCPM hub image}
+    container_name: msst-hub-runtime
+    restart: 'no'
+    command: [python, -m, hub_runtime]
+    environment:
+      HUB_SERVICE_ID: msst
+      HUB_RUNTIME_VERSION: ${MSST_RUNTIME_VERSION:?}
+      HUB_RUNTIME_ACTOR_ID: ${MSST_ACTOR_ID:?}
+      HUB_RUNTIME_TOKEN: ${HUB_MSST_RUNTIME_TOKEN:?}
+      HUB_RUNTIME_STATE_DIR: /var/lib/hub-runtime/actors/${MSST_ACTOR_ID:?}
+      HUB_NODE_URL: http://host.docker.internal:13912
+      HUB_CONTROL_HOST: '0.0.0.0'
+      HUB_CONTROL_PORT: '18083'
+      HUB_GPU_PROCESS: '1'
+      CUDA_VISIBLE_DEVICES: ''
+      NVIDIA_VISIBLE_DEVICES: '${GPU_0:?},${GPU_1:?},${GPU_2:?}'
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      TZ: Asia/Shanghai
+      GRADIO_SERVER_NAME: 0.0.0.0
+      MSST_API_DB_PATH: /app/data/api_tasks.db
+      OPENBLAS_NUM_THREADS: '1'
+      TTD_WEBHOOK_URL: ''
+      GRADIO_ANALYTICS_ENABLED: 'False'
+    extra_hosts: ['host.docker.internal:host-gateway']
+    ports: ['127.0.0.1:13919:18083']
+    volumes:
+      - /opt/ttd-hub-v2/runtime-state/msst:/var/lib/hub-runtime
+      - /TTD-Data/msst/data:/app/data
+      - /TTD-Data/msst/pretrain/All_Models:/app/pretrain
+      - /TTD-Data/msst/hub-root:/root
+      - /TTD-Data/msst/hub-configs:/app/configs
+      - /TTD-Data/msst/hub-results:/app/results
+      - /TTD-Data/msst/hub-cache:/app/cache
+      - /TTD-Data/msst/hub-input:/app/input
+      - /TTD:/TTD
+    mem_limit: 64g
+    pids_limit: 200
+    cpus: '12.0'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['${GPU_0:?}', '${GPU_1:?}', '${GPU_2:?}']
+              capabilities: [gpu]
+    networks: [model]
+    labels:
+      ttd.hub.instance: msst
+      ttd.hub.release: ${MSST_RELEASE:?}
+      ttd.hub.dynamic_gpu: 'true'
+  entry:
+    image: ${HUB_IMAGE:?fixed Hub image}
+    container_name: msst-hub-entry
+    restart: unless-stopped
+    entrypoint: [/usr/local/bin/model-entry]
+    command: [--upstream, 'http://runtime:8000', --listen, ':8080']
+    networks: [model, caddy]
+    labels:
+      ttd.hub.release: ${MSST_RELEASE:?}
+      caddy_ingress_network: caddy
+      caddy: http://msst-pool-validation
+      caddy.reverse_proxy: '{{upstreams 8080}}'
+networks:
+  model: {}
+  caddy: {external: true}

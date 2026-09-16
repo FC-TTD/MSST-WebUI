@@ -1,0 +1,15 @@
+name: msst-handoff-guard
+services:
+  guard:
+    image: ${HUB_IMAGE:?fixed Hub image}
+    container_name: msst-handoff-guard
+    entrypoint: [/bin/sh, -c, 'exec sleep infinity']
+    restart: unless-stopped
+    networks: [caddy]
+    labels:
+      hub.msst.role: legacy-admission-guard
+      hub.msst.operation: ${MSST_RELEASE:?}
+      caddy: http://msst
+      caddy.0_route.0_respond: '"msst-maintenance:${MSST_RELEASE:?}" 503'
+networks:
+  caddy: {external: true}

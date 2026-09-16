@@ -1,0 +1,7 @@
+**
+!hub_runtime
+!hub_runtime/**
+hub_runtime/**/__pycache__
+!deploy
+!deploy/hub
+!deploy/hub/Dockerfile
