@@ -145,6 +145,12 @@ class Tasks:
         self._guard = threading.RLock()
         self._owners = {}
 
+    def pending_api_count(self):
+        # Async receipts may precede the worker entering Runtime.execution.
+        # Gradio UI work is counted separately by the shared SDK integration.
+        with self._guard:
+            return sum(owner.kind == 'api' for owner in self._owners.values())
+
     def _add(self, owner):
         with self._guard:
             self._owners[id(owner)] = owner

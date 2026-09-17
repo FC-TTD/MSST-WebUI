@@ -34,6 +34,7 @@ def create_app(runtime=None):
     runtime = runtime or Runtime(load_model, completion=completion, release=release,
                                  cleanup=cleanup, execution_timeout=None)
     app = build_api(runtime)
+    runtime.pending_work = app.state.hub_tasks.pending_api_count
     app.add_middleware(NativeUIRoutes)
     return attach(app, runtime=runtime, ui_factory=lambda:build_ui(runtime, app.state.hub_tasks), ui_path=UI_PATH)
 

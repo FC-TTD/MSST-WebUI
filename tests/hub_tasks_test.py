@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import threading
 from types import SimpleNamespace
+from unittest.mock import patch
 import unittest
 
 from hub_runtime.tasks import Tasks
@@ -28,6 +29,17 @@ class Request:
 
 
 class TasksTest(unittest.TestCase):
+    def test_async_receipt_is_pending_before_its_worker_starts(self):
+        storage = Storage()
+        tasks = Tasks(SimpleNamespace(), storage)
+        with patch('hub_runtime.tasks.threading.Thread.start'):
+            receipt = tasks.start(Request())
+        self.assertEqual(receipt.status, 'queued')
+        self.assertEqual(tasks.pending_api_count(), 1)
+        owner = next(iter(tasks._owners.values()))
+        tasks._remove(owner)
+        self.assertEqual(tasks.pending_api_count(), 0)
+
     def test_async_receipt_holds_activity_until_native_exit_and_preserves_context(self):
         trace = ContextVar('trace')
         entered, release, ended = threading.Event(), threading.Event(), threading.Event()
