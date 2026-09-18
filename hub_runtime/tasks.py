@@ -159,6 +159,8 @@ class Tasks:
         owner.done.set()
         with self._guard:
             self._owners.pop(id(owner), None)
+        if hasattr(self.runtime, 'complete_background_work'):
+            self.runtime.complete_background_work()
 
     def _status(self, task_id):
         state = self.storage.get_task_status(task_id)
@@ -208,6 +210,8 @@ class Tasks:
         task_id = self.storage.create_task(status='queued', message=None)
         owner = Owner('api', task_id)
         self._add(owner)
+        if hasattr(self.runtime, 'accept_background_work'):
+            self.runtime.accept_background_work()
         context = copy_context()
 
         def execute():
