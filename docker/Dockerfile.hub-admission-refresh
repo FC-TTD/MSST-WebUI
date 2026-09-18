@@ -1,0 +1,7 @@
+# syntax=docker/dockerfile:1
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+# Keep the native model/dependency layers and current healthcheck unchanged.
+COPY --link hub_runtime/tasks.py /app/hub_runtime/tasks.py
+ARG SOURCE_REV
+LABEL ttd.hub.provider.revision="${SOURCE_REV}"

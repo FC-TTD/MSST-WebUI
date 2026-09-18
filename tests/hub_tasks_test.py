@@ -31,7 +31,9 @@ class Request:
 class TasksTest(unittest.TestCase):
     def test_async_receipt_is_pending_before_its_worker_starts(self):
         storage = Storage()
-        tasks = Tasks(SimpleNamespace(), storage)
+        lifecycle=[]
+        runtime=SimpleNamespace(accept_background_work=lambda:lifecycle.append('accepted'),complete_background_work=lambda:lifecycle.append('finished'))
+        tasks = Tasks(runtime, storage)
         with patch('hub_runtime.tasks.threading.Thread.start'):
             receipt = tasks.start(Request())
         self.assertEqual(receipt.status, 'queued')
@@ -39,6 +41,7 @@ class TasksTest(unittest.TestCase):
         owner = next(iter(tasks._owners.values()))
         tasks._remove(owner)
         self.assertEqual(tasks.pending_api_count(), 0)
+        self.assertEqual(lifecycle,['accepted','finished'])
 
     def test_async_receipt_holds_activity_until_native_exit_and_preserves_context(self):
         trace = ContextVar('trace')
